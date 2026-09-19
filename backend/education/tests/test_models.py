@@ -125,18 +125,20 @@ class EnrollmentModelTests(TestCase):
                     student=self.student, subject=self.subject, start_date="2026-09-01"
                 )
 
-    def test_deleting_group_sets_enrollment_group_to_null(self):
-        """SET_NULL — database.md, раздел 6: Enrollment переживает удаление Group."""
-        enrollment = Enrollment.objects.create(
-            student=self.student, group=self.group, start_date="2026-09-01"
-        )
-        # Group будет удалена принудительно для теста — в реальном коде
-        # Group обычно не удаляется физически (is_active=False), но
-        # SET_NULL должен работать корректно в любом случае.
-        self.group.delete()
+    def test_cannot_delete_group_with_enrollment(self):
+        """
+        PROTECT — исправлено после того, как тест обнаружил конфликт
+        с CHECK-constraint (SET_NULL мог обнулить все три поля разом,
+        нарушая enrollment_group_xor_individual). Group физически
+        нельзя удалить, пока есть Enrollment — только деактивировать
+        (is_active=False).
+        """
+        from django.db.models import ProtectedError
 
-        enrollment.refresh_from_db()
-        self.assertIsNone(enrollment.group)
+        Enrollment.objects.create(student=self.student, group=self.group, start_date="2026-09-01")
+
+        with self.assertRaises(ProtectedError):
+            self.group.delete()
 
     def test_deleting_student_cascades_to_enrollment(self):
         """CASCADE — Enrollment без Student не имеет смысла."""
@@ -148,3 +150,5 @@ class EnrollmentModelTests(TestCase):
         self.student.delete()
 
         self.assertFalse(Enrollment.objects.filter(id=enrollment_id).exists())
+
+

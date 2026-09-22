@@ -2,7 +2,18 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase
 from django.utils.dateparse import parse_datetime
 
-from education.models import Attendance, Enrollment, Grade, Group, Lesson, Schedule, Student, Subject
+from education.models import (
+    Answer,
+    Attendance,
+    Enrollment,
+    Grade,
+    Group,
+    Lesson,
+    Question,
+    Schedule,
+    Student,
+    Subject,
+)
 from users.models import User
 
 class SubjectModelTests(TestCase):
@@ -318,3 +329,53 @@ class GradeModelTests(TestCase):
 
         grade.refresh_from_db()
         self.assertEqual(grade.given_by_teacher, self.teacher)
+
+
+
+
+class QuestionAnswerModelTests(TestCase):
+    def setUp(self):
+        subject = Subject.objects.create(name="История")
+        self.teacher = User.objects.create_user(full_name="Учитель Титова")
+        group = Group.objects.create(subject=subject, teacher=self.teacher, name="5А")
+        self.student = Student.objects.create(full_name="Морозов Артём")
+        self.parent = User.objects.create_user(full_name="Родитель Морозова")
+
+    def test_create_question(self):
+        question = Question.objects.create(
+            parent=self.parent,
+            student=self.student,
+            teacher=self.teacher,
+            text="Как дела у сына на истории?",
+        )
+        self.assertFalse(question.answered)
+
+    def test_create_answer(self):
+        question = Question.objects.create(
+            parent=self.parent, student=self.student, teacher=self.teacher, text="Как успехи?"
+        )
+        answer = Answer.objects.create(
+            question=question, text="Всё хорошо, учится на отлично.", answered_by=self.teacher
+        )
+        self.assertEqual(question.answer, answer)  # обратная сторона OneToOne
+
+    def test_cannot_create_two_answers_for_same_question(self):
+        question = Question.objects.create(
+            parent=self.parent, student=self.student, teacher=self.teacher, text="Вопрос"
+        )
+        Answer.objects.create(question=question, text="Первый ответ", answered_by=self.teacher)
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Answer.objects.create(question=question, text="Второй ответ", answered_by=self.teacher)
+
+    def test_deleting_question_cascades_to_answer(self):
+        question = Question.objects.create(
+            parent=self.parent, student=self.student, teacher=self.teacher, text="Вопрос"
+        )
+        answer = Answer.objects.create(question=question, text="Ответ", answered_by=self.teacher)
+        answer_id = answer.id
+
+        question.delete()
+
+        self.assertFalse(Answer.objects.filter(id=answer_id).exists())

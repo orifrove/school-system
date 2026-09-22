@@ -399,3 +399,62 @@ class Grade(models.Model):
 
     def __str__(self) -> str:
         return f"{self.enrollment} — {self.value}"
+
+
+
+class Question(models.Model):
+    """
+    Вопрос родителя учителю про конкретного ребёнка. database.md v4,
+    раздел 2. Простейший MVP-messaging: родитель спросил, учитель
+    ответил — без полноценного треда переписки (это V2, Conversation/
+    Message, database.md раздел 18).
+    """
+
+    parent = models.ForeignKey(
+        "users.User",
+        on_delete=models.CASCADE,
+        related_name="questions_asked",
+    )
+    student = models.ForeignKey(
+        "education.Student",
+        on_delete=models.CASCADE,
+        related_name="questions",
+        help_text="Про какого ребёнка вопрос (у родителя может быть несколько детей).",
+    )
+    teacher = models.ForeignKey(
+        "users.User",
+        on_delete=models.CASCADE,
+        related_name="questions_received",
+    )
+    text = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    answered = models.BooleanField(default=False)
+
+    class Meta:
+        db_table = "education_question"
+
+    def __str__(self) -> str:
+        return f"{self.parent} → {self.teacher}: {self.text[:50]}"
+
+
+class Answer(models.Model):
+    """Ответ учителя на Question. Один ответ на вопрос в MVP (1:1)."""
+
+    question = models.OneToOneField(
+        "education.Question",
+        on_delete=models.CASCADE,
+        related_name="answer",
+    )
+    text = models.TextField()
+    answered_by = models.ForeignKey(
+        "users.User",
+        on_delete=models.PROTECT,
+        related_name="answers_given",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "education_answer"
+
+    def __str__(self) -> str:
+        return f"Answer to #{self.question_id}"

@@ -1,6 +1,17 @@
 from django.contrib import admin
 
-from .models import Attendance, Enrollment, Grade, Group, Lesson, Schedule, Student, Subject
+from .models import (
+    Answer,
+    Attendance,
+    Enrollment,
+    Grade,
+    Group,
+    Lesson,
+    Question,
+    Schedule,
+    Student,
+    Subject,
+)
 
 
 @admin.register(Student)
@@ -61,3 +72,17 @@ class AttendanceAdmin(admin.ModelAdmin):
 class GradeAdmin(admin.ModelAdmin):
     list_display = ("id", "enrollment", "value", "given_by_teacher", "given_at")
     autocomplete_fields = ("enrollment", "lesson", "given_by_teacher")
+
+
+@admin.register(Question)
+class QuestionAdmin(admin.ModelAdmin):
+    list_display = ("id", "parent", "student", "teacher", "answered", "created_at")
+    list_filter = ("answered",)
+    search_fields = ("student__full_name",)
+    autocomplete_fields = ("parent", "student", "teacher")
+
+
+@admin.register(Answer)
+class AnswerAdmin(admin.ModelAdmin):
+    list_display = ("id", "question", "answered_by", "created_at")
+    autocomplete_fields = ("question", "answered_by")

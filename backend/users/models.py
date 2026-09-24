@@ -109,3 +109,62 @@ class UserRole(models.Model):
 
     def __str__(self) -> str:
         return f"{self.user} — {self.role}"
+
+
+
+
+class InviteCode(models.Model):
+    """
+    Одноразовый код привязки Telegram к предсозданному User.
+    database.md v4, раздел 12 (полный lifecycle).
+
+    Admin создаёт User (role=Parent/Teacher) БЕЗ telegram_id, система
+    генерирует InviteCode, человек вводит код в бота -> service
+    привязывает telegram_id к существующему User. Это единственный
+    безопасный способ назначить роль - пользователь никогда не может
+    сам себе присвоить Admin/Teacher, просто написав боту "я учитель".
+
+    UNIQUE(user) WHERE status='active' - партиальный constraint:
+    у одного User может быть максимум один АКТИВНЫЙ код одновременно.
+    Старые invalidated/used коды остаются в истории, не мешают.
+    """
+
+    code = models.CharField(max_length=64, unique=True, db_index=True)
+    user = models.ForeignKey(
+        "users.User",
+        on_delete=models.CASCADE,
+        related_name="invite_codes",
+    )
+
+    STATUS_ACTIVE = "active"
+    STATUS_USED = "used"
+    STATUS_INVALIDATED = "invalidated"
+    STATUS_CHOICES = [
+        (STATUS_ACTIVE, "Active"),
+        (STATUS_USED, "Used"),
+        (STATUS_INVALIDATED, "Invalidated"),
+    ]
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
+
+    created_by = models.ForeignKey(
+        "users.User",
+        on_delete=models.PROTECT,
+        related_name="invite_codes_created",
+        help_text="Admin, создавший код.",
+    )
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "users_invitecode"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user"],
+                condition=models.Q(status="active"),
+                name="uniq_invitecode_active_per_user",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.code} — {self.user} — {self.status}"

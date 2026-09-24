@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 
-from .models import Role, User, UserRole
+from .models import InviteCode, Role, User, UserRole
 
 
 class UserRoleInline(admin.TabularInline):
@@ -50,3 +50,15 @@ class UserRoleAdmin(admin.ModelAdmin):
     list_display = ("id", "user", "role", "assigned_by", "assigned_at")
     list_filter = ("role",)
     autocomplete_fields = ("user", "role", "assigned_by")
+
+
+
+
+
+@admin.register(InviteCode)
+class InviteCodeAdmin(admin.ModelAdmin):
+    list_display = ("id", "code", "user", "status", "created_by", "expires_at", "used_at")
+    list_filter = ("status",)
+    search_fields = ("code", "user__full_name")
+    autocomplete_fields = ("user", "created_by")
+    readonly_fields = ("created_at",)

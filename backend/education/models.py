@@ -458,3 +458,47 @@ class Answer(models.Model):
 
     def __str__(self) -> str:
         return f"Answer to #{self.question_id}"
+
+
+
+
+class ParentStudent(models.Model):
+    """
+    M2M Parent(User) <-> Student. database.md v4, раздел 2.
+    Один Parent может иметь нескольких детей, один Student может
+    иметь нескольких родителей/опекунов - оба направления M2M.
+    """
+
+    RELATION_MOTHER = "mother"
+    RELATION_FATHER = "father"
+    RELATION_GUARDIAN = "guardian"
+    RELATION_OTHER = "other"
+    RELATION_CHOICES = [
+        (RELATION_MOTHER, "Mother"),
+        (RELATION_FATHER, "Father"),
+        (RELATION_GUARDIAN, "Guardian"),
+        (RELATION_OTHER, "Other"),
+    ]
+
+    parent = models.ForeignKey(
+        "users.User",
+        on_delete=models.CASCADE,
+        related_name="parent_links",
+    )
+    student = models.ForeignKey(
+        "education.Student",
+        on_delete=models.CASCADE,
+        related_name="parent_links",
+    )
+    relation = models.CharField(max_length=16, choices=RELATION_CHOICES, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "education_parentstudent"
+        constraints = [
+            models.UniqueConstraint(fields=["parent", "student"], name="uniq_parentstudent"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.parent} — {self.student}"
+        

@@ -7,6 +7,7 @@ from .models import (
     Grade,
     Group,
     Lesson,
+    ParentStudent,
     Question,
     Schedule,
     Student,
@@ -86,3 +87,11 @@ class QuestionAdmin(admin.ModelAdmin):
 class AnswerAdmin(admin.ModelAdmin):
     list_display = ("id", "question", "answered_by", "created_at")
     autocomplete_fields = ("question", "answered_by")
+
+    
+
+@admin.register(ParentStudent)
+class ParentStudentAdmin(admin.ModelAdmin):
+    list_display = ("id", "parent", "student", "relation")
+    list_filter = ("relation",)
+    autocomplete_fields = ("parent", "student")

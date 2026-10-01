@@ -39,6 +39,7 @@ INSTALLED_APPS = [
     "education",
     "billing",
     "notifications",
+    "bot",
 ]
 
 MIDDLEWARE = [

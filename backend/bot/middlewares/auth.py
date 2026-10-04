@@ -29,6 +29,9 @@ class AuthMiddleware(BaseMiddleware):
         if telegram_user is not None:
             db_user = await self._get_user(telegram_user.id)
 
+        if db_user is not None and not db_user.is_active:
+            await event.answer("Аккаунт отключён. Обратитесь к администратору.")
+            return
         data["db_user"] = db_user
         return await handler(event, data)
 
@@ -40,4 +43,4 @@ class AuthMiddleware(BaseMiddleware):
         как aiogram работает в asyncio, а Django ORM (без async views)
         - нет. Стандартный паттерн для интеграции Django+asyncio-бота.
         """
-        return User.objects.filter(telegram_id=telegram_id, is_active=True).first()
+        return User.objects.filter(telegram_id=telegram_id).first()

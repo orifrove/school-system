@@ -67,7 +67,7 @@ def mark_attendance(lesson, student, status, marked_by=None):
     существующую запись, не создаёт вторую строку (database.md, раздел 13).
     """
     schedule = lesson.schedule
-    lesson_date = lesson.starts_at.date()
+    lesson_date = timezone.localdate(lesson.starts_at)
 
     if schedule.group_id is not None:
         eligible = Enrollment.objects.filter(

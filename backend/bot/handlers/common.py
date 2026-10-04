@@ -17,7 +17,7 @@ router = Router()
 @router.message(CommandStart())
 async def cmd_start(message: Message, db_user) -> None:
     if db_user is not None:
-        await message.answer(f"С возвращением, {escape(db_user.full_name)}!")
+        await message.answer(f"С возвращением, {escape(db_user.full_name)}!\nГруппы преподавателя: /groups")
         return
 
     await message.answer(
@@ -42,7 +42,7 @@ async def try_use_invite_code(message: Message, db_user) -> None:
     result = await _activate_invite_code(code_text, message.from_user.id)
 
     if result == "ok":
-        await message.answer("Код принят! Добро пожаловать.")
+        await message.answer("Код принят! Добро пожаловать.\nГруппы преподавателя: /groups")
     elif result == "not_found":
         await message.answer("Такой код не найден. Проверьте правильность и попробуйте снова.")
     elif result == "expired":

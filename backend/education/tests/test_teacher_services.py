@@ -224,6 +224,76 @@ class TeacherServicesTests(TestCase):
         with self.assertRaises(ValidationError):
             render(self.teacher.pk, custom)
 
+    def test_progress_counts_students_not_number_of_grades(self):
+        teacher_services.record_teacher_attendance(self.teacher.pk, self.lesson.pk, self.student.pk, "late")
+        grade = teacher_services.record_teacher_grade(self.teacher.pk, self.lesson.pk, self.student.pk, "5", 0)
+        teacher_services.record_teacher_grade(self.teacher.pk, self.lesson.pk, self.student.pk, "A", grade.pk)
+        _, progress = teacher_services.lesson_progress(self.teacher.pk, self.lesson.pk)
+        self.assertEqual(progress, {"total": 1, "marked": 1, "remaining": 0, "graded": 1,
+                                  "statuses": {"present": 0, "absent": 0, "late": 1, "excused": 0}})
+
+    def test_next_unmarked_crosses_page_boundary_and_tracks_corrections(self):
+        students = [self.student]
+        for index in range(10):
+            student = Student.objects.create(full_name=f"ZZ {index:02}")
+            Enrollment.objects.create(student=student, group=self.group, start_date="2026-10-04")
+            students.append(student)
+        for student in students[:9]:
+            teacher_services.record_teacher_attendance(self.teacher.pk, self.lesson.pk, student.pk, "present")
+        next_student, page = teacher_services.next_unmarked_student(self.teacher.pk, self.lesson.pk)
+        self.assertEqual(next_student.pk, students[9].pk)
+        self.assertEqual(page, 1)
+        _, progress = teacher_services.lesson_progress(self.teacher.pk, self.lesson.pk)
+        self.assertEqual((progress["total"], progress["marked"], progress["remaining"]), (11, 9, 2))
+        teacher_services.record_teacher_attendance(self.teacher.pk, self.lesson.pk, students[0].pk, "absent")
+        _, updated = teacher_services.lesson_progress(self.teacher.pk, self.lesson.pk)
+        self.assertEqual(updated["marked"], 9)
+        self.assertEqual(updated["statuses"]["absent"], 1)
+
+    def test_progress_excludes_ineligible_student_even_with_old_attendance(self):
+        teacher_services.record_teacher_attendance(self.teacher.pk, self.lesson.pk, self.student.pk, "present")
+        self.enrollment.status = "ended"
+        self.enrollment.save()
+        _, progress = teacher_services.lesson_progress(self.teacher.pk, self.lesson.pk)
+        self.assertEqual((progress["total"], progress["marked"], progress["remaining"]), (0, 0, 0))
+        self.assertEqual(teacher_services.next_unmarked_student(self.teacher.pk, self.lesson.pk), (None, 0))
+
+    def test_summary_and_next_require_current_permission(self):
+        for user in [self.other, self.teacher]:
+            if user == self.teacher:
+                UserRole.objects.filter(user=user).delete()
+            for operation in [teacher_services.lesson_progress, teacher_services.next_unmarked_student]:
+                with self.assertRaises(PermissionDenied):
+                    operation(user.pk, self.lesson.pk)
+
+    def test_next_and_summary_buttons_complete_attendance_without_changing_lesson(self):
+        from bot.handlers.teacher import render_screen
+        render = async_to_sync(render_screen)
+        text, roster = render(self.teacher.pk, f"tg:roster:{self.lesson.pk}:0")
+        self.assertIn("Отмечено: 0 из 1", text)
+        next_button = next(b for row in roster.inline_keyboard for b in row if b.callback_data.startswith("tg:next:"))
+        _, student_card = render(self.teacher.pk, next_button.callback_data)
+        text, saved = render(self.teacher.pk, student_card.inline_keyboard[0][0].callback_data)
+        self.assertIn("Посещаемость заполнена", text)
+        self.assertFalse(any(b.callback_data.startswith("tg:next:") for row in saved.inline_keyboard for b in row))
+        summary = next(b for row in saved.inline_keyboard for b in row if b.callback_data.startswith("tg:summary:"))
+        text, _ = render(self.teacher.pk, summary.callback_data)
+        self.assertIn("Присутствует: 1", text)
+        self.assertIn("С оценками: 0 из 1", text)
+        text, _ = render(self.teacher.pk, next_button.callback_data)
+        self.assertIn("Неотмеченных учеников нет", text)
+        self.assertEqual(Attendance.objects.count(), 1)
+        self.lesson.refresh_from_db()
+        self.assertEqual(self.lesson.status, "planned")
+
+    def test_empty_summary_does_not_claim_completed_attendance(self):
+        from bot.handlers.teacher import render_screen
+        self.student.is_active = False
+        self.student.save()
+        text, _ = async_to_sync(render_screen)(self.teacher.pk, f"tg:summary:{self.lesson.pk}")
+        self.assertIn("нет подходящих активных учеников", text)
+        self.assertNotIn("заполнена полностью", text)
+
 
 class ConcurrentGradeTests(TransactionTestCase):
     def setUp(self):

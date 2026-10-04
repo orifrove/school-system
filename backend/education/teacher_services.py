@@ -2,7 +2,7 @@
 
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.utils import timezone
 
 from education import authorization, services
@@ -77,6 +77,34 @@ def lesson_roster(user_id, lesson_id, page=0):
     students, more = _page(_students(lesson), page)
     statuses = dict(Attendance.objects.filter(lesson=lesson, student__in=students).values_list("student_id", "status"))
     return lesson, students, statuses, more
+
+
+def lesson_progress(user_id, lesson_id):
+    """Count eligible learners across all pages, not only the displayed page."""
+    lesson = _lesson(_teacher(user_id), lesson_id)
+    students = _students(lesson)
+    counts = dict(Attendance.objects.filter(lesson=lesson, student__in=students)
+                  .values("status").annotate(total=Count("pk")).values_list("status", "total"))
+    statuses = {status: counts.get(status, 0) for status, _ in Attendance.STATUS_CHOICES}
+    total = students.count()
+    marked = sum(statuses.values())
+    graded = Grade.objects.filter(lesson=lesson, enrollment__group_id=lesson.schedule.group_id,
+                                   enrollment__student__in=students).values("enrollment__student_id").distinct().count()
+    return lesson, {"total": total, "marked": marked, "remaining": total - marked,
+                    "graded": graded, "statuses": statuses}
+
+
+def next_unmarked_student(user_id, lesson_id):
+    """Recompute the next learner when clicked; old buttons never cache a target."""
+    lesson = _lesson(_teacher(user_id), lesson_id)
+    students = _students(lesson)
+    marked = Attendance.objects.filter(lesson=lesson, status__in=dict(Attendance.STATUS_CHOICES)).values("student_id")
+    student = students.exclude(pk__in=marked).first()
+    if student is None:
+        return None, 0
+    preceding = students.filter(Q(full_name__lt=student.full_name) |
+                                Q(full_name=student.full_name, pk__lt=student.pk)).count()
+    return student, preceding // PAGE_SIZE
 
 
 def attendance_student(user_id, lesson_id, student_id):

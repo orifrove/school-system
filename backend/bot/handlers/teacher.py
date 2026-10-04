@@ -51,8 +51,7 @@ def _number(value, *, zero=False):
     return number
 
 
-@sync_to_async
-def render_screen(user_id, data):
+def _render_screen(user_id, data):
     """Parse untrusted callback data before invoking authorized use cases."""
     parts = data.split(":")
     if len(parts) < 3 or parts[0] != "tg":
@@ -82,13 +81,19 @@ def render_screen(user_id, data):
         lesson_id, page = _number(parts[2]), _number(parts[3], zero=True)
         lesson, students, statuses, more = services.lesson_roster(user_id, lesson_id, page)
         when = timezone.localtime(lesson.starts_at).strftime("%d.%m.%Y %H:%M")
-        text = f"<b>Посещаемость и оценки · {when}</b>\nВыберите ученика:"
+        _, progress = services.lesson_progress(user_id, lesson_id)
+        text = (f"<b>Посещаемость и оценки · {when}</b>\n"
+                f"Отмечено: {progress['marked']} из {progress['total']}\n"
+                f"С оценками: {progress['graded']} из {progress['total']}\nВыберите ученика:")
         if not students:
             text += "\nНет активных учеников на этой странице."
         for student in students:
             status = STATUS_LABELS.get(statuses.get(student.pk), "Не отмечен")
             rows.append([_button(f"{student.full_name} · {status}", f"tg:student:{lesson_id}:{student.pk}:{page}")])
         _navigation(rows, f"tg:roster:{lesson_id}", page, more)
+        if progress["remaining"]:
+            rows.append([_button("➡️ Следующий неотмеченный", f"tg:next:{lesson_id}")])
+        rows.append([_button("📊 Итоги занятия", f"tg:summary:{lesson_id}")])
         rows.append([_button("К занятиям", f"tg:lessons:{lesson.schedule.group_id}:0")])
     elif action == "student" and len(parts) == 5:
         lesson_id, student_id, page = _number(parts[2]), _number(parts[3]), _number(parts[4], zero=True)
@@ -109,6 +114,38 @@ def render_screen(user_id, data):
         text = "Отметка сохранена. Повторная отметка обновит существующую запись."
         rows.append([_button("К списку учеников", f"tg:roster:{lesson_id}:{page}")])
         rows.append([_button("⭐ Поставить оценку", f"tg:grade:{lesson_id}:{student_id}:{page}")])
+        _, progress = services.lesson_progress(user_id, lesson_id)
+        text += f"\nОтмечено: {progress['marked']} из {progress['total']}."
+        if progress["remaining"]:
+            rows.append([_button("➡️ Следующий неотмеченный", f"tg:next:{lesson_id}")])
+        else:
+            text += "\n✅ Посещаемость заполнена для всех учеников."
+        rows.append([_button("📊 Итоги занятия", f"tg:summary:{lesson_id}")])
+    elif action == "next" and len(parts) == 3:
+        lesson_id = _number(parts[2])
+        student, page = services.next_unmarked_student(user_id, lesson_id)
+        if student is not None:
+            return _render_screen(user_id, f"tg:student:{lesson_id}:{student.pk}:{page}")
+        text = "Неотмеченных учеников нет. Можно посмотреть итоги занятия."
+        rows.append([_button("📊 Итоги занятия", f"tg:summary:{lesson_id}")])
+        rows.append([_button("К списку учеников", f"tg:roster:{lesson_id}:0")])
+    elif action == "summary" and len(parts) == 3:
+        lesson_id = _number(parts[2])
+        lesson, progress = services.lesson_progress(user_id, lesson_id)
+        when = timezone.localtime(lesson.starts_at).strftime("%d.%m.%Y %H:%M")
+        text = (f"<b>Итоги занятия · {when}</b>\n"
+                f"Учеников в журнале: {progress['total']}\n"
+                f"Отмечено: {progress['marked']} из {progress['total']}\n")
+        text += "\n".join(f"{label}: {progress['statuses'][status]}" for status, label in STATUS_LABELS.items())
+        text += f"\nНе отмечены: {progress['remaining']}\nС оценками: {progress['graded']} из {progress['total']}"
+        if progress["remaining"]:
+            rows.append([_button("➡️ Продолжить отмечать", f"tg:next:{lesson_id}")])
+        elif progress["total"]:
+            text += "\n\n✅ Посещаемость заполнена полностью."
+        else:
+            text += "\n\nНа дату занятия нет подходящих активных учеников."
+        rows.append([_button("К списку учеников", f"tg:roster:{lesson_id}:0")])
+        rows.append([_button("К занятиям", f"tg:lessons:{lesson.schedule.group_id}:0")])
     elif action == "grade" and len(parts) == 5:
         lesson_id, student_id, page = _number(parts[2]), _number(parts[3]), _number(parts[4], zero=True)
         lesson, student, grades, version = services.grade_context(user_id, lesson_id, student_id)
@@ -136,6 +173,9 @@ def render_screen(user_id, data):
     else:
         raise ValueError
     return text, InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
+render_screen = sync_to_async(_render_screen)
 
 
 @router.message(Command("groups"))

@@ -1,12 +1,15 @@
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from zoneinfo import ZoneInfo
 from asgiref.sync import async_to_sync
 
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.test import TestCase
+from django.db import close_old_connections, connections
+from django.test import TestCase, TransactionTestCase
 
 from education import services, teacher_services
-from education.models import Attendance, Enrollment, Group, Lesson, Schedule, Student, Subject
+from education.models import Attendance, Enrollment, Grade, Group, Lesson, Schedule, Student, Subject
 from users.models import Role, User, UserRole
 
 
@@ -139,3 +142,109 @@ class TeacherServicesTests(TestCase):
             with self.assertRaises(ValueError):
                 render(self.teacher.pk, bad_data)
         self.assertFalse(Attendance.objects.exists())
+
+    def test_grade_uses_correct_enrollment_lesson_and_author(self):
+        grade = teacher_services.record_teacher_grade(self.teacher.pk, self.lesson.pk, self.student.pk, " 8/10 ", 0)
+        self.assertEqual(grade.value, "8/10")
+        self.assertEqual(grade.enrollment, self.enrollment)
+        self.assertEqual(grade.lesson, self.lesson)
+        self.assertEqual(grade.given_by_teacher, self.teacher)
+        self.assertIsNotNone(grade.given_at)
+
+    def test_stale_grade_button_cannot_duplicate_or_change_grade(self):
+        grade = teacher_services.record_teacher_grade(self.teacher.pk, self.lesson.pk, self.student.pk, "5", 0)
+        for value in ["5", "2"]:
+            with self.assertRaises(ValidationError):
+                teacher_services.record_teacher_grade(self.teacher.pk, self.lesson.pk, self.student.pk, value, 0)
+        self.assertEqual(Grade.objects.count(), 1)
+        _, _, _, version = teacher_services.grade_context(self.teacher.pk, self.lesson.pk, self.student.pk)
+        self.assertEqual(version, grade.pk)
+        teacher_services.record_teacher_grade(self.teacher.pk, self.lesson.pk, self.student.pk, "A", version)
+        self.assertEqual(Grade.objects.count(), 2)
+        grade.refresh_from_db()
+        self.assertEqual(grade.value, "5")
+
+    def test_invalid_grade_values_do_not_write(self):
+        for value in ["", "   ", "1" * 17, "A\nB", "A\x00B"]:
+            with self.assertRaises(ValidationError):
+                teacher_services.record_teacher_grade(self.teacher.pk, self.lesson.pk, self.student.pk, value, 0)
+        self.assertFalse(Grade.objects.exists())
+
+    def test_grade_permission_is_rechecked(self):
+        with self.assertRaises(PermissionDenied):
+            teacher_services.record_teacher_grade(self.other.pk, self.lesson.pk, self.student.pk, "5", 0)
+        self.enrollment.status = "ended"
+        self.enrollment.save()
+        with self.assertRaises(PermissionDenied):
+            teacher_services.record_teacher_grade(self.teacher.pk, self.lesson.pk, self.student.pk, "5", 0)
+        self.assertFalse(Grade.objects.exists())
+
+    def test_cancelled_lesson_and_revoked_role_reject_grade(self):
+        self.lesson.status = "cancelled"
+        self.lesson.save()
+        with self.assertRaises(PermissionDenied):
+            teacher_services.record_teacher_grade(self.teacher.pk, self.lesson.pk, self.student.pk, "5", 0)
+        self.lesson.status = "planned"
+        self.lesson.save()
+        UserRole.objects.filter(user=self.teacher).delete()
+        with self.assertRaises(PermissionDenied):
+            teacher_services.record_teacher_grade(self.teacher.pk, self.lesson.pk, self.student.pk, "5", 0)
+
+    def test_ambiguous_enrollment_does_not_assign_grade_arbitrarily(self):
+        Enrollment.objects.create(student=self.student, group=self.group, start_date="2026-10-04")
+        with self.assertRaises(PermissionDenied):
+            teacher_services.record_teacher_grade(self.teacher.pk, self.lesson.pk, self.student.pk, "5", 0)
+        self.assertFalse(Grade.objects.exists())
+
+    def test_grade_buttons_save_and_show_assessment(self):
+        from bot.handlers.teacher import render_screen
+        render = async_to_sync(render_screen)
+        _, card = render(self.teacher.pk, f"tg:student:{self.lesson.pk}:{self.student.pk}:0")
+        grade_button = next(b for row in card.inline_keyboard for b in row if b.callback_data.startswith("tg:grade:"))
+        _, choices = render(self.teacher.pk, grade_button.callback_data)
+        self.assertEqual([b.text for b in choices.inline_keyboard[0]], ["2", "3", "4", "5"])
+        save = choices.inline_keyboard[0][-1].callback_data
+        text, back = render(self.teacher.pk, save)
+        self.assertIn("5", text)
+        self.assertEqual(Grade.objects.get().value, "5")
+        with self.assertRaises(ValidationError):
+            render(self.teacher.pk, save)
+        text, _ = render(self.teacher.pk, back.inline_keyboard[0][0].callback_data)
+        self.assertIn("Последние оценки: 5", text)
+
+    def test_custom_grade_prompt_and_stale_prompt(self):
+        from bot.handlers.teacher import render_screen
+        render = async_to_sync(render_screen)
+        _, choices = render(self.teacher.pk, f"tg:grade:{self.lesson.pk}:{self.student.pk}:0")
+        custom = choices.inline_keyboard[1][0].callback_data
+        text, _ = render(self.teacher.pk, custom)
+        self.assertIn("8/10", text)
+        self.assertFalse(Grade.objects.exists())
+        teacher_services.record_teacher_grade(self.teacher.pk, self.lesson.pk, self.student.pk, "A", 0)
+        with self.assertRaises(ValidationError):
+            render(self.teacher.pk, custom)
+
+
+class ConcurrentGradeTests(TransactionTestCase):
+    def setUp(self):
+        TeacherServicesTests.setUp(self)
+
+    def test_concurrent_clicks_create_only_one_assessment(self):
+        barrier = Barrier(2)
+
+        def save(value):
+            close_old_connections()
+            try:
+                barrier.wait(timeout=10)
+                try:
+                    teacher_services.record_teacher_grade(self.teacher.pk, self.lesson.pk, self.student.pk, value, 0)
+                    return "saved"
+                except ValidationError:
+                    return "stale"
+            finally:
+                connections.close_all()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(save, ["4", "5"]))
+        self.assertCountEqual(results, ["saved", "stale"])
+        self.assertEqual(Grade.objects.count(), 1)

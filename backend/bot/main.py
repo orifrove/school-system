@@ -12,6 +12,7 @@ import logging
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import SimpleEventIsolation
 
 from bot.config import BOT_TOKEN
 from bot.handlers import common, teacher
@@ -28,7 +29,7 @@ async def run_bot() -> None:
         )
 
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    dispatcher = Dispatcher()
+    dispatcher = Dispatcher(events_isolation=SimpleEventIsolation())
 
     # Student data and invite codes belong only in private chats with the bot.
     dispatcher.message.filter(F.chat.type == "private")

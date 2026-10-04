@@ -6,7 +6,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from education import authorization, services
-from education.models import Attendance, Enrollment, Group, Lesson, Student
+from education.models import Attendance, Enrollment, Grade, Group, Lesson, Student
 from users.models import Role, User
 
 PAGE_SIZE = 8
@@ -97,3 +97,44 @@ def record_teacher_attendance(user_id, lesson_id, student_id, status):
     if student is None:
         raise PermissionDenied("Ученик недоступен для этого занятия.")
     return services.mark_attendance(lesson, student, status, marked_by=user)
+
+
+def _grade_enrollment(lesson, student_id):
+    day = timezone.localdate(lesson.starts_at)
+    enrollments = list(Enrollment.objects.filter(
+        group_id=lesson.schedule.group_id, student_id=student_id,
+        student__is_active=True, status=Enrollment.STATUS_ACTIVE, start_date__lte=day,
+    ).filter(Q(end_date__isnull=True) | Q(end_date__gte=day)).select_related("student")[:2])
+    if len(enrollments) != 1:
+        raise PermissionDenied("Не удалось однозначно определить обучение ученика.")
+    return enrollments[0]
+
+
+def grade_context(user_id, lesson_id, student_id):
+    lesson = _lesson(_teacher(user_id), lesson_id)
+    enrollment = _grade_enrollment(lesson, student_id)
+    grades = list(Grade.objects.filter(enrollment=enrollment, lesson=lesson).order_by("-pk")[:5])
+    return lesson, enrollment.student, grades, grades[0].pk if grades else 0
+
+
+@transaction.atomic
+def record_teacher_grade(user_id, lesson_id, student_id, value, expected_latest_id):
+    """Add an assessment through add_grade; stale menu buttons cannot duplicate it.
+
+    The lesson lock serializes writes from this bot. A new assessment requires
+    opening a fresh menu, whose version is the latest grade ID for this learner.
+    Existing grades (including their authors) are never overwritten here.
+    """
+    user = _teacher(user_id)
+    lesson = _lesson(user, lesson_id, lock=True)
+    enrollment = _grade_enrollment(lesson, student_id)
+    if not isinstance(value, str):
+        raise ValidationError("Введите оценку текстом.")
+    value = value.strip()
+    if not value or len(value) > 16 or any(not char.isprintable() for char in value):
+        raise ValidationError("Оценка должна содержать от 1 до 16 символов без переноса строки.")
+    latest = Grade.objects.filter(enrollment=enrollment, lesson=lesson).order_by("-pk").values_list("pk", flat=True).first() or 0
+    if latest != expected_latest_id:
+        raise ValidationError("Оценки уже изменились. Откройте карточку ученика заново.")
+    return services.add_grade(enrollment=enrollment, given_by_teacher=user, value=value,
+                              lesson=lesson, given_at=timezone.now())

@@ -15,7 +15,9 @@ router = Router()
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, db_user) -> None:
+async def cmd_start(message: Message, db_user, state=None) -> None:
+    if state is not None:
+        await state.clear()
     if db_user is not None:
         await message.answer(f"С возвращением, {escape(db_user.full_name)}!\nГруппы преподавателя: /groups")
         return

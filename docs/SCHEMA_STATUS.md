@@ -1,35 +1,60 @@
-﻿# Schema Status — актуальное состояние на 2026-09-24
+# Schema Status — актуальное состояние на 2026-10-04
 
-Все 17 моделей из первоначального проектирования (Phase 2) реализованы.
-Этот файл — краткий актуальный снимок, не полная архитектурная документация
-(она была потеряна при распаковке архива в начале Phase 3 и не восстановлена
-полностью — решили держать актуальность здесь, а не в устаревших документах).
+Реализованы 18 моделей. Этот файл — краткий снимок состояния кода;
+он не заменяет подробную архитектурную документацию.
 
 ## Apps и модели
 
-- users: User (custom), Role, UserRole
+- users: User (custom), Role, UserRole, InviteCode.
 - education: Student, Subject, Group, Enrollment, Schedule, Lesson,
-  Attendance, Grade, Question, Answer
-- billing: BillingPeriod, Payment
-- notifications: Notification
+  Attendance, Grade, Question, Answer, ParentStudent.
+- billing: BillingPeriod, Payment.
+- notifications: Notification.
 
-## Известные отличия от исходного Phase 2 проектирования
+## Основные решения
 
-- Enrollment.group: on_delete изменён с SET_NULL на PROTECT.
-  Причина: SET_NULL мог обнулить group_id у Enrollment, где
-  subject/teacher уже NULL (групповой случай) - получалась строка
-  со всеми тремя полями NULL, что нарушало CHECK-constraint
-  enrollment_group_xor_individual. Обнаружено тестом, исправлено
-  в коммите fix: change Enrollment.group on_delete to PROTECT.
+- Enrollment задаёт либо Group, либо Subject + Teacher; сочетание
+  контролируется CHECK-constraint. Enrollment.group использует PROTECT:
+  SET_NULL нарушал бы constraint для группового обучения.
+- Schedule задаёт либо Group, либо Enrollment; обе связи используют PROTECT.
+- Lesson.teacher и Lesson.subject сохраняют исторический snapshot.
+  Grade.given_by_teacher сохраняет автора оценки.
+- BillingPeriod.amount_due — snapshot суммы начисления.
+- Notification имеет уникальность по recipient + event_key.
+- InviteCode обеспечивает одноразовую привязку Telegram к созданному User.
+  У пользователя может быть не более одного active-кода.
+  Поле code имеет unique=True; избыточный db_index=True удалён
+  миграцией users.0004_alter_invitecode_code.
 
-## Не реализовано пока
+## Service layer и доступ
 
-- users.InviteCode - отложена, механизм безопасной привязки Telegram
-  ещё не создан на уровне модели.
-- Service layer / бизнес-правила, которые не выражаются DB constraint
-  (Group.subject immutability, Enrollment overlap validation,
-  Attendance eligibility, Grade-Lesson consistency) - Phase 4/5.
+В education/services.py реализованы update_group, change_group_teacher,
+mark_attendance, create_enrollment и add_grade: защита предмета группы
+с учебной историей, обновление учителя planned-занятий, проверка допуска
+и upsert посещаемости, проверка пересечений Enrollment и согласованности
+Grade с Lesson.
 
-## Тесты
+В education/authorization.py реализованы проверки конкретных связей
+учителя с обучением и родителя с учеником через ParentStudent.
 
-59/59 passing на момент последнего коммита (Phase 3.2.5).
+## Telegram Bot — Phase 6.1
+
+Реализованы запуск через python manage.py run_bot, polling для разработки,
+auth middleware, /start и обработка invite-кода. Приложение bot включено
+в INSTALLED_APPS.
+
+По результатам ранее выполненной ручной проверки бот отвечает в Telegram,
+/start работает, неверный и истёкший коды отклоняются. Успешную активацию
+и повторный /start ещё требуется подтвердить вручную после исправления
+expires_at у тестового кода в dev-БД.
+
+## Что осталось
+
+- Teacher/Parent/Admin handlers; следующий этап — Phase 6.2: Teacher handlers.
+- Отправка уведомлений (модель Notification уже существует).
+- Admin Web Panel, handlers платежей и сообщений.
+- Автоматические тесты bot handlers и последующие интеграционные проверки.
+
+## Проверки
+
+2026-10-04: python manage.py check — без ошибок; makemigrations --check --dry-run — без изменений; python manage.py test --noinput — 81/81 passing на PostgreSQL. Проверки выполнены отдельным Python 3.13.7 с зависимостями backend/venv; пользовательский venv не изменялся. Миграция users.0004 применена в dev-БД; sqlmigrate показывает no-op.

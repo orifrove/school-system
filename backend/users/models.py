@@ -129,7 +129,7 @@ class InviteCode(models.Model):
     Старые invalidated/used коды остаются в истории, не мешают.
     """
 
-    code = models.CharField(max_length=64, unique=True, db_index=True)
+    code = models.CharField(max_length=64, unique=True)
     user = models.ForeignKey(
         "users.User",
         on_delete=models.CASCADE,

@@ -16,6 +16,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from education.models import Attendance, Enrollment, Grade, Group, Lesson, Schedule
+from education.notification_events import queue_attendance, queue_grade
 
 
 def update_group(group, **fields):
@@ -55,6 +56,7 @@ def change_group_teacher(group, new_teacher):
     return group
 
 
+@transaction.atomic
 def mark_attendance(lesson, student, status, marked_by=None):
     """
     database.md, раздел 3.3: Attendance допустим только если Student
@@ -86,6 +88,13 @@ def mark_attendance(lesson, student, status, marked_by=None):
         if schedule.enrollment.student_id != student.id:
             raise ValidationError("Этот ученик не относится к индивидуальному занятию.")
 
+    if status not in dict(Attendance.STATUS_CHOICES):
+        raise ValidationError("Некорректная отметка посещаемости.")
+    # Serialize changes even for callers outside the bot's teacher wrapper.
+    Lesson.objects.select_for_update().get(pk=lesson.pk)
+    previous = Attendance.objects.filter(lesson=lesson, student=student).first()
+    if previous is not None and previous.status == status:
+        return previous
     attendance, _created = Attendance.objects.update_or_create(
         lesson=lesson,
         student=student,
@@ -96,6 +105,7 @@ def mark_attendance(lesson, student, status, marked_by=None):
             "updated_at": timezone.now(),
         },
     )
+    queue_attendance(attendance)
     return attendance
 
 
@@ -129,6 +139,7 @@ def create_enrollment(student, start_date, end_date=None, group=None, subject=No
     )
 
 
+@transaction.atomic
 def add_grade(enrollment, given_by_teacher, value, lesson=None, **fields):
     """
     database.md, раздел 3.5 / 7: если Grade.lesson указан, Lesson и
@@ -149,7 +160,9 @@ def add_grade(enrollment, given_by_teacher, value, lesson=None, **fields):
                 "к занятию из чужой группы/обучения."
             )
 
-    return Grade.objects.create(
+    grade = Grade.objects.create(
         enrollment=enrollment, lesson=lesson, given_by_teacher=given_by_teacher,
         value=value, **fields,
     )
+    queue_grade(grade)
+    return grade

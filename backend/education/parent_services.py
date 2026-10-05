@@ -1,0 +1,73 @@
+"""Read-only parent views, scoped to a current ParentStudent relationship."""
+
+from django.core.exceptions import PermissionDenied, ValidationError
+from django.db.models import Exists, OuterRef, Q
+from django.db.models.functions import TruncDate
+from django.utils import timezone
+
+from education.authorization import user_is_parent_of
+from education.models import Attendance, Enrollment, Grade, Lesson, Student
+from users.models import Role, User
+
+PAGE_SIZE = 5
+
+
+def _parent(user_id):
+    user = User.objects.filter(pk=user_id, is_active=True, user_roles__role__code=Role.PARENT).first()
+    if user is None:
+        raise PermissionDenied("Доступно только активному родителю.")
+    return user
+
+
+def _child(user_id, student_id):
+    parent = _parent(user_id)
+    child = Student.objects.filter(pk=student_id, is_active=True).first()
+    if child is None or not user_is_parent_of(parent, child):
+        raise PermissionDenied("Данные ребёнка недоступны.")
+    return child
+
+
+def _page(queryset, page):
+    if type(page) is not int or not 0 <= page <= 100000:
+        raise ValidationError("Некорректная страница.")
+    rows = list(queryset[page * PAGE_SIZE:(page + 1) * PAGE_SIZE + 1])
+    return rows[:PAGE_SIZE], len(rows) > PAGE_SIZE
+
+
+def parent_children(user_id, page=0):
+    parent = _parent(user_id)
+    return _page(Student.objects.filter(parent_links__parent=parent, is_active=True)
+                 .order_by("full_name", "pk"), page)
+
+
+def child_profile(user_id, student_id):
+    return _child(user_id, student_id)
+
+
+def child_grades(user_id, student_id, page=0):
+    child = _child(user_id, student_id)
+    rows, more = _page(Grade.objects.filter(enrollment__student=child)
+        .select_related("lesson__subject", "enrollment__subject", "enrollment__group__subject")
+        .order_by("-given_at", "-pk"), page)
+    return child, rows, more
+
+
+def child_attendance(user_id, student_id, page=0):
+    child = _child(user_id, student_id)
+    rows, more = _page(Attendance.objects.filter(student=child).select_related("lesson__subject")
+                       .order_by("-lesson__starts_at", "-pk"), page)
+    return child, rows, more
+
+
+def child_upcoming_lessons(user_id, student_id, page=0):
+    child = _child(user_id, student_id)
+    eligible = Enrollment.objects.filter(student=child, status=Enrollment.STATUS_ACTIVE,
+        start_date__lte=OuterRef("local_day")).filter(
+        Q(end_date__isnull=True) | Q(end_date__gte=OuterRef("local_day"))).filter(
+        Q(group_id=OuterRef("schedule__group_id")) |
+        Q(pk=OuterRef("schedule__enrollment_id"), group__isnull=True))
+    lessons = Lesson.objects.filter(status=Lesson.STATUS_PLANNED, starts_at__gte=timezone.now())
+    lessons = lessons.annotate(local_day=TruncDate("starts_at", tzinfo=timezone.get_default_timezone()))
+    lessons = lessons.filter(Exists(eligible)).select_related("subject").order_by("starts_at", "pk")
+    rows, more = _page(lessons, page)
+    return child, rows, more

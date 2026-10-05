@@ -6,20 +6,24 @@ architecture.md, раздел 3.3 — Telegram User Linking flow.
 from html import escape
 
 from aiogram import F, Router
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
 from asgiref.sync import sync_to_async
 from users.services import activate_invite_code
+from bot.keyboards.main_menu import main_menu
 
 router = Router()
 
 
 @router.message(CommandStart())
+@router.message(Command("menu"))
 async def cmd_start(message: Message, db_user, state=None) -> None:
     if state is not None:
         await state.clear()
     if db_user is not None:
-        await message.answer(f"С возвращением, {escape(db_user.full_name)}!\nГруппы преподавателя: /groups")
+        keyboard = await main_menu(db_user.pk)
+        prompt = "Выберите раздел:" if keyboard else "Доступных разделов пока нет. Обратитесь к администратору."
+        await message.answer(f"С возвращением, {escape(db_user.full_name)}!\n{prompt}", reply_markup=keyboard)
         return
 
     await message.answer(
@@ -44,7 +48,7 @@ async def try_use_invite_code(message: Message, db_user) -> None:
     result = await _activate_invite_code(code_text, message.from_user.id)
 
     if result == "ok":
-        await message.answer("Код принят! Добро пожаловать.\nГруппы преподавателя: /groups")
+        await message.answer("Код принят! Добро пожаловать.\nОткройте /menu — там доступны разделы для вашей роли.")
     elif result == "not_found":
         await message.answer("Такой код не найден. Проверьте правильность и попробуйте снова.")
     elif result == "expired":

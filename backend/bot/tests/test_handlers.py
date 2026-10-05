@@ -7,7 +7,7 @@ from aiogram.types import Chat, Message, Update, User as TelegramUser
 from django.test import SimpleTestCase
 from django.core.exceptions import PermissionDenied, ValidationError
 
-from bot.handlers import common, teacher
+from bot.handlers import common, parent, teacher
 from bot.middlewares.auth import AuthMiddleware
 
 
@@ -66,7 +66,8 @@ class HandlerTests(SimpleTestCase):
 
     async def test_start_escapes_user_name(self):
         message = SimpleNamespace(answer=AsyncMock())
-        await common.cmd_start(message, SimpleNamespace(full_name="<b>A & B</b>"))
+        with patch.object(common, "main_menu", new=AsyncMock(return_value=None)):
+            await common.cmd_start(message, SimpleNamespace(pk=1, full_name="<b>A & B</b>"))
         self.assertIn("&lt;b&gt;A &amp; B&lt;/b&gt;", message.answer.call_args.args[0])
 
     async def test_invite_success_response(self):
@@ -109,6 +110,7 @@ class HandlerTests(SimpleTestCase):
         dispatcher = Dispatcher()
         dispatcher.message.filter(F.chat.type == "private")
         dispatcher.message.middleware(AuthMiddleware())
+        dispatcher.include_router(parent.router)
         dispatcher.include_router(teacher.router)
         dispatcher.include_router(common.router)
         bot = Bot("123456:TEST_TOKEN_FOR_OFFLINE_TESTS")
@@ -118,6 +120,7 @@ class HandlerTests(SimpleTestCase):
             return Update(update_id=update_id, message=message)
         with patch.object(AuthMiddleware, "_get_user", new=AsyncMock(return_value=SimpleNamespace(pk=1, is_active=True))), \
              patch.object(teacher, "render_screen", new=AsyncMock(return_value=("Groups", None))) as render, \
+             patch.object(parent, "render_parent_screen", new=AsyncMock(return_value=("Children", None))) as parent_render, \
              patch.object(common, "_activate_invite_code", new=AsyncMock()) as activate, \
              patch.object(bot.session, "make_request", new=AsyncMock()) as send:
             await dispatcher.feed_update(bot, update("private", "/groups", 1))
@@ -125,5 +128,10 @@ class HandlerTests(SimpleTestCase):
             activate.assert_not_awaited()
             send.reset_mock()
             await dispatcher.feed_update(bot, update("group", "/groups", 2))
+            send.assert_not_awaited()
+            await dispatcher.feed_update(bot, update("private", "/children", 3))
+            parent_render.assert_awaited_once_with(1, "pg:children:0")
+            send.reset_mock()
+            await dispatcher.feed_update(bot, update("group", "/children", 4))
             send.assert_not_awaited()
         await bot.session.close()

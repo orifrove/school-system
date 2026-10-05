@@ -15,7 +15,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import SimpleEventIsolation
 
 from bot.config import BOT_TOKEN
-from bot.handlers import common, teacher
+from bot.handlers import common, parent, teacher
 from bot.middlewares.auth import AuthMiddleware
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,8 @@ async def run_bot() -> None:
     dispatcher.callback_query.filter(F.message.chat.type == "private")
     dispatcher.message.middleware(AuthMiddleware())
     dispatcher.callback_query.middleware(AuthMiddleware())
+    # Parent commands must be reachable even while a multi-role user enters a grade.
+    dispatcher.include_router(parent.router)
     dispatcher.include_router(teacher.router)
     dispatcher.include_router(common.router)
 

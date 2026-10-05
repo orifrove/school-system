@@ -1,8 +1,11 @@
 """Teacher bot use cases; authorization is rechecked on every request."""
 
+from datetime import datetime, time, timedelta
+
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
-from django.db.models import Count, Q
+from django.db.models import Count, F, Q
+from django.db.models.functions import TruncDate
 from django.utils import timezone
 
 from education import authorization, services
@@ -37,24 +40,42 @@ def _group(user, group_id, lock=False):
 
 
 def _lesson(user, lesson_id, lock=False):
-    # Lock the group before the lesson, matching change_group_teacher's order.
-    group_id = Lesson.objects.filter(pk=lesson_id).values_list("schedule__group_id", flat=True).first()
-    group = _group(user, group_id, lock=lock)
+    target = Lesson.objects.filter(pk=lesson_id).values("schedule__group_id", "schedule__enrollment_id").first()
+    if target is None:
+        raise PermissionDenied("Занятие недоступно.")
+    # Lock the teaching source before the lesson, matching group teacher changes.
+    if target["schedule__group_id"] is not None:
+        group = _group(user, target["schedule__group_id"], lock=lock)
+        scope = Q(schedule__group=group)
+    else:
+        enrollments = Enrollment.objects
+        if lock:
+            enrollments = enrollments.select_for_update()
+        enrollment = enrollments.filter(pk=target["schedule__enrollment_id"], group__isnull=True,
+                                         status=Enrollment.STATUS_ACTIVE).first()
+        if enrollment is None or not authorization.user_teaches_enrollment(user, enrollment):
+            raise PermissionDenied("Индивидуальное обучение недоступно.")
+        scope = Q(schedule__enrollment=enrollment)
     lessons = Lesson.objects.select_related("schedule", "subject")
     if lock:
         lessons = lessons.select_for_update(of=("self",))
-    lesson = lessons.filter(pk=lesson_id, schedule__group=group, teacher=user).first()
+    lesson = lessons.filter(scope, pk=lesson_id, teacher=user).first()
     if lesson is None or lesson.status == Lesson.STATUS_CANCELLED:
         raise PermissionDenied("Занятие недоступно или отменено.")
     return lesson
 
 
+def _eligible_enrollments(lesson):
+    day = timezone.localdate(lesson.starts_at)
+    queryset = Enrollment.objects.filter(status=Enrollment.STATUS_ACTIVE, student__is_active=True,
+                                          start_date__lte=day).filter(Q(end_date__isnull=True) | Q(end_date__gte=day))
+    if lesson.schedule.group_id is not None:
+        return queryset.filter(group_id=lesson.schedule.group_id)
+    return queryset.filter(pk=lesson.schedule.enrollment_id, group__isnull=True)
+
+
 def _students(lesson):
-    local_date = timezone.localdate(lesson.starts_at)
-    eligible = Enrollment.objects.filter(
-        group_id=lesson.schedule.group_id, status=Enrollment.STATUS_ACTIVE,
-        start_date__lte=local_date,
-    ).filter(Q(end_date__isnull=True) | Q(end_date__gte=local_date))
+    eligible = _eligible_enrollments(lesson)
     return Student.objects.filter(is_active=True, pk__in=eligible.values("student_id")).order_by("full_name", "pk")
 
 
@@ -70,6 +91,28 @@ def group_lessons(user_id, group_id, page=0):
     rows, more = _page(Lesson.objects.filter(schedule__group=group, teacher=user)
                        .exclude(status=Lesson.STATUS_CANCELLED).order_by("-starts_at", "-pk"), page)
     return group, rows, more
+
+
+def teacher_agenda(user_id, period="today", page=0):
+    user = _teacher(user_id)
+    if period not in ("today", "tomorrow", "week"):
+        raise ValidationError("Неизвестный период расписания.")
+    first = timezone.localdate() + timedelta(days=1 if period == "tomorrow" else 0)
+    last = first + timedelta(days=7 if period == "week" else 1)
+    start = timezone.make_aware(datetime.combine(first, time.min))
+    end = timezone.make_aware(datetime.combine(last, time.min))
+    lessons = Lesson.objects.filter(teacher=user, starts_at__gte=start, starts_at__lt=end)
+    lessons = lessons.exclude(status=Lesson.STATUS_CANCELLED).annotate(
+        local_day=TruncDate("starts_at", tzinfo=timezone.get_default_timezone()))
+    group_scope = Q(schedule__group__teacher=user, schedule__group__is_active=True)
+    individual_scope = Q(schedule__enrollment__teacher=user, schedule__enrollment__group__isnull=True,
+        schedule__enrollment__status=Enrollment.STATUS_ACTIVE, schedule__enrollment__student__is_active=True,
+        schedule__enrollment__start_date__lte=F("local_day")) & (
+            Q(schedule__enrollment__end_date__isnull=True) | Q(schedule__enrollment__end_date__gte=F("local_day")))
+    lessons = lessons.filter(group_scope | individual_scope).select_related(
+        "subject", "schedule__group", "schedule__enrollment__student").order_by("starts_at", "pk")
+    rows, more = _page(lessons, page)
+    return rows, more
 
 
 def lesson_roster(user_id, lesson_id, page=0):
@@ -88,7 +131,7 @@ def lesson_progress(user_id, lesson_id):
     statuses = {status: counts.get(status, 0) for status, _ in Attendance.STATUS_CHOICES}
     total = students.count()
     marked = sum(statuses.values())
-    graded = Grade.objects.filter(lesson=lesson, enrollment__group_id=lesson.schedule.group_id,
+    graded = Grade.objects.filter(lesson=lesson, enrollment__in=_eligible_enrollments(lesson),
                                    enrollment__student__in=students).values("enrollment__student_id").distinct().count()
     return lesson, {"total": total, "marked": marked, "remaining": total - marked,
                     "graded": graded, "statuses": statuses}
@@ -128,11 +171,7 @@ def record_teacher_attendance(user_id, lesson_id, student_id, status):
 
 
 def _grade_enrollment(lesson, student_id):
-    day = timezone.localdate(lesson.starts_at)
-    enrollments = list(Enrollment.objects.filter(
-        group_id=lesson.schedule.group_id, student_id=student_id,
-        student__is_active=True, status=Enrollment.STATUS_ACTIVE, start_date__lte=day,
-    ).filter(Q(end_date__isnull=True) | Q(end_date__gte=day)).select_related("student")[:2])
+    enrollments = list(_eligible_enrollments(lesson).filter(student_id=student_id).select_related("student")[:2])
     if len(enrollments) != 1:
         raise PermissionDenied("Не удалось однозначно определить обучение ученика.")
     return enrollments[0]

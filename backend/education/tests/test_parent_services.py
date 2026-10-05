@@ -166,7 +166,7 @@ class ParentServicesTests(TestCase):
         role = Role.objects.create(code=Role.TEACHER)
         UserRole.objects.create(user=self.parent, role=role)
         menu = async_to_sync(main_menu)(self.parent.pk)
-        self.assertEqual([b.callback_data for row in menu.inline_keyboard for b in row], ["tg:groups:0", "pg:children:0"])
+        self.assertEqual([b.callback_data for row in menu.inline_keyboard for b in row], ["tg:groups:0", "tg:agenda:today:0", "pg:children:0"])
         self.parent.is_active = False
         self.parent.save()
         self.assertIsNone(async_to_sync(main_menu)(self.parent.pk))

@@ -17,6 +17,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--teacher-id", required=True, type=int)
+        parser.add_argument("--individual", action="store_true", help="Also prepare one individual demo lesson today.")
 
     @transaction.atomic
     def handle(self, *args, **options):
@@ -57,6 +58,30 @@ class Command(BaseCommand):
         )
         if lesson.teacher_id != teacher.pk or lesson.subject_id != subject.pk or lesson.status == Lesson.STATUS_CANCELLED:
             raise CommandError("Demo lesson was changed manually; no lesson history will be overwritten.")
+        if options["individual"]:
+            self._individual(teacher, subject, today)
         self.stdout.write(self.style.SUCCESS(
             f"Ready: demo group #{group.pk}; {today} 18:00 ({settings.TIME_ZONE}); 2 demo students. Open /groups."
         ))
+
+    def _individual(self, teacher, subject, today):
+        student, _ = Student.objects.get_or_create(full_name=f"[DEMO #{teacher.pk}] Индивидуальный ученик")
+        candidates = list(Enrollment.objects.filter(student=student, group__isnull=True)[:2])
+        if not student.is_active or len(candidates) > 1:
+            raise CommandError("Individual demo data was changed manually; review it first.")
+        enrollment = candidates[0] if candidates else create_enrollment(
+            student=student, teacher=teacher, subject=subject, start_date=today)
+        if (enrollment.teacher_id != teacher.pk or enrollment.subject_id != subject.pk
+            or enrollment.status != Enrollment.STATUS_ACTIVE or enrollment.start_date > today
+            or (enrollment.end_date and enrollment.end_date < today)):
+            raise CommandError("Individual demo enrollment changed; it will not be overwritten.")
+        schedule, _ = Schedule.objects.get_or_create(enrollment=enrollment, weekday=today.weekday(),
+            start_time=time(19), end_time=time(20), defaults={"valid_from": today})
+        if not schedule.is_active or schedule.valid_from > today or (schedule.valid_until and schedule.valid_until < today):
+            raise CommandError("Individual demo schedule is not valid today.")
+        starts = timezone.make_aware(datetime.combine(today, time(19)))
+        lesson, _ = Lesson.objects.get_or_create(schedule=schedule, starts_at=starts,
+            defaults={"ends_at": starts + timedelta(hours=1), "teacher": teacher, "subject": subject})
+        if lesson.teacher_id != teacher.pk or lesson.subject_id != subject.pk or lesson.status == Lesson.STATUS_CANCELLED:
+            raise CommandError("Individual demo lesson changed; it will not be overwritten.")
+        self.stdout.write(self.style.SUCCESS(f"Individual demo lesson #{lesson.pk}: {today} 19:00. Open /schedule."))

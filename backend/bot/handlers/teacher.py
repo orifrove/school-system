@@ -32,6 +32,12 @@ def _button(text, data):
     return InlineKeyboardButton(text=text, callback_data=data)
 
 
+def _lesson_back(lesson):
+    if lesson.schedule.group_id is not None:
+        return _button("К занятиям группы", f"tg:lessons:{lesson.schedule.group_id}:0")
+    return _button("К расписанию", "tg:agenda:week:0")
+
+
 def _navigation(rows, prefix, page, more):
     buttons = []
     if page:
@@ -58,13 +64,30 @@ def _render_screen(user_id, data):
         raise ValueError
     action = parts[1]
     rows = []
-    if action == "groups" and len(parts) == 3:
+    if action == "agenda" and len(parts) == 4:
+        period, page = parts[2], _number(parts[3], zero=True)
+        lessons, more = services.teacher_agenda(user_id, period, page)
+        title = {"today": "Сегодня", "tomorrow": "Завтра", "week": "Ближайшие 7 дней"}[period]
+        text = f"<b>Моё расписание · {title}</b>\nВремя Ташкента. Выберите занятие:"
+        rows.append([_button(label, f"tg:agenda:{key}:0") for key, label in
+                     [("today", "Сегодня"), ("tomorrow", "Завтра"), ("week", "7 дней")]])
+        if not lessons:
+            text += "\nНа этой странице занятий нет."
+        for lesson in lessons:
+            when = timezone.localtime(lesson.starts_at).strftime("%d.%m %H:%M")
+            target = (lesson.schedule.group.name if lesson.schedule.group_id is not None
+                      else f"Инд. · {lesson.schedule.enrollment.student.full_name}")
+            rows.append([_button(f"{when} · {target[:45]} · {lesson.subject.name[:30]}", f"tg:roster:{lesson.pk}:0")])
+        _navigation(rows, f"tg:agenda:{period}", page, more)
+        rows.append([_button("Мои группы", "tg:groups:0")])
+    elif action == "groups" and len(parts) == 3:
         page = _number(parts[2], zero=True)
         groups, more = services.teacher_groups(user_id, page)
         text = "<b>Мои группы</b>" if groups else "Активных групп на этой странице нет."
         for group in groups:
             rows.append([_button(f"{group.name} · {group.subject.name}", f"tg:lessons:{group.pk}:0")])
         _navigation(rows, "tg:groups", page, more)
+        rows.append([_button("📅 Моё расписание", "tg:agenda:today:0")])
     elif action == "lessons" and len(parts) == 4:
         group_id, page = _number(parts[2]), _number(parts[3], zero=True)
         group, lessons, more = services.group_lessons(user_id, group_id, page)
@@ -94,7 +117,7 @@ def _render_screen(user_id, data):
         if progress["remaining"]:
             rows.append([_button("➡️ Следующий неотмеченный", f"tg:next:{lesson_id}")])
         rows.append([_button("📊 Итоги занятия", f"tg:summary:{lesson_id}")])
-        rows.append([_button("К занятиям", f"tg:lessons:{lesson.schedule.group_id}:0")])
+        rows.append([_lesson_back(lesson)])
     elif action == "student" and len(parts) == 5:
         lesson_id, student_id, page = _number(parts[2]), _number(parts[3]), _number(parts[4], zero=True)
         lesson, student = services.attendance_student(user_id, lesson_id, student_id)
@@ -145,7 +168,7 @@ def _render_screen(user_id, data):
         else:
             text += "\n\nНа дату занятия нет подходящих активных учеников."
         rows.append([_button("К списку учеников", f"tg:roster:{lesson_id}:0")])
-        rows.append([_button("К занятиям", f"tg:lessons:{lesson.schedule.group_id}:0")])
+        rows.append([_lesson_back(lesson)])
     elif action == "grade" and len(parts) == 5:
         lesson_id, student_id, page = _number(parts[2]), _number(parts[3]), _number(parts[4], zero=True)
         lesson, student, grades, version = services.grade_context(user_id, lesson_id, student_id)
@@ -187,6 +210,21 @@ async def my_groups(message: Message, db_user, state: FSMContext = None):
         return
     try:
         text, keyboard = await render_screen(db_user.pk, "tg:groups:0")
+    except PermissionDenied as exc:
+        await message.answer(escape(str(exc)))
+        return
+    await message.answer(text, reply_markup=keyboard)
+
+
+@router.message(Command("schedule"))
+async def my_schedule(message: Message, db_user, state=None):
+    if state is not None:
+        await state.clear()
+    if db_user is None:
+        await message.answer("Сначала активируйте приглашение через /start.")
+        return
+    try:
+        text, keyboard = await render_screen(db_user.pk, "tg:agenda:today:0")
     except PermissionDenied as exc:
         await message.answer(escape(str(exc)))
         return

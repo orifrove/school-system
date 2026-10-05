@@ -10,6 +10,7 @@ def main_menu(user_id):
     rows = []
     if Role.TEACHER in roles:
         rows.append([InlineKeyboardButton(text="📚 Мои группы", callback_data="tg:groups:0")])
+        rows.append([InlineKeyboardButton(text="📅 Моё расписание", callback_data="tg:agenda:today:0")])
     if Role.PARENT in roles:
         rows.append([InlineKeyboardButton(text="👨‍👩‍👧 Мои дети", callback_data="pg:children:0")])
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None

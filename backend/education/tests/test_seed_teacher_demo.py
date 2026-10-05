@@ -71,3 +71,16 @@ class SeedTeacherDemoTests(TestCase):
                 self.seed()
         for model in [Subject, Group, Student, Enrollment, Schedule, Lesson]:
             self.assertEqual(model.objects.count(), 0)
+
+    def test_individual_demo_is_repeatable_and_visible_in_agenda(self):
+        from education.teacher_services import teacher_agenda
+        for _ in range(2):
+            call_command("seed_teacher_demo", teacher_id=self.teacher.pk, individual=True, stdout=StringIO())
+        self.assertEqual(Enrollment.objects.filter(group__isnull=True).count(), 1)
+        self.assertEqual(Student.objects.count(), 3)
+        self.assertEqual(Lesson.objects.count(), 2)
+        lessons, _ = teacher_agenda(self.teacher.pk)
+        self.assertEqual(len(lessons), 2)
+        individual = next(lesson for lesson in lessons if lesson.schedule.enrollment_id)
+        _, students, _, _ = lesson_roster(self.teacher.pk, individual.pk)
+        self.assertEqual(len(students), 1)

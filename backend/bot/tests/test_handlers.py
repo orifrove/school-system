@@ -134,4 +134,6 @@ class HandlerTests(SimpleTestCase):
             send.reset_mock()
             await dispatcher.feed_update(bot, update("group", "/children", 4))
             send.assert_not_awaited()
+            await dispatcher.feed_update(bot, update("private", "/schedule", 5))
+            render.assert_awaited_with(1, "tg:agenda:today:0")
         await bot.session.close()

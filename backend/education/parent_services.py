@@ -3,14 +3,15 @@
 from django.core.exceptions import PermissionDenied, ValidationError
 from decimal import Decimal
 
-from django.db.models import Exists, OuterRef, Q, Sum, F, Value, DecimalField
-from django.db.models.functions import TruncDate, Greatest
+from django.db.models import Exists, OuterRef, Q, Sum
+from django.db.models.functions import TruncDate
 from django.utils import timezone
 
 from education.authorization import user_is_parent_of
 from education.models import Attendance, Enrollment, Grade, Lesson, Student
 from users.models import Role, User
 from billing.models import BillingPeriod, Payment
+from billing.queries import with_balances
 
 PAGE_SIZE = 5
 
@@ -48,14 +49,8 @@ def child_profile(user_id, student_id):
 
 
 def _billing_periods(child):
-    money = DecimalField(max_digits=20, decimal_places=2)
-    zero = Value(Decimal("0.00"), output_field=money)
-    return BillingPeriod.objects.filter(enrollment__student=child).annotate(
-        paid=Sum("payments__amount", default=Decimal("0.00"), output_field=money),
-    ).annotate(
-        outstanding=Greatest(F("amount_due") - F("paid"), zero, output_field=money),
-        credit=Greatest(F("paid") - F("amount_due"), zero, output_field=money),
-    ).select_related("enrollment__group__subject", "enrollment__subject")
+    return with_balances(BillingPeriod.objects.filter(enrollment__student=child)).select_related(
+        "enrollment__group__subject", "enrollment__subject")
 
 
 def child_billing(user_id, student_id, page=0):

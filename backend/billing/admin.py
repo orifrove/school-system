@@ -1,5 +1,7 @@
 from django.contrib import admin
+from django.urls import reverse
 from django.utils import timezone
+from urllib.parse import urlencode
 
 from .forms import BillingPeriodAdminForm, PaymentAdminForm
 from .models import BillingPeriod, Payment
@@ -43,6 +45,7 @@ class PaymentHistoryInline(admin.TabularInline):
 
 @admin.register(BillingPeriod)
 class BillingPeriodAdmin(admin.ModelAdmin):
+    change_form_template = "admin/billing/billingperiod/change_form.html"
     form = BillingPeriodAdminForm
     list_display = ("id", "enrollment", "period_start", "period_end", "amount_due",
                     "paid_amount", "remaining_amount", "credit_amount", "balance_status")
@@ -55,6 +58,16 @@ class BillingPeriodAdmin(admin.ModelAdmin):
     date_hierarchy = "period_start"
     ordering = ("-period_start", "-pk")
     list_per_page = 30
+
+    def change_view(self, request, object_id, form_url="", extra_context=None):
+        context = dict(extra_context or {})
+        payment_admin = self.admin_site._registry.get(Payment)
+        if payment_admin and payment_admin.has_add_permission(request):
+            context["register_payment_url"] = (
+                reverse("admin:billing_payment_add", current_app=self.admin_site.name)
+                + "?" + urlencode({"billing_period": object_id})
+            )
+        return super().change_view(request, object_id, form_url, context)
 
     def get_queryset(self, request):
         return with_balances(super().get_queryset(request)).select_related(
@@ -102,6 +115,17 @@ class PaymentAdmin(admin.ModelAdmin):
     def get_changeform_initial_data(self, request):
         initial = super().get_changeform_initial_data(request)
         initial.setdefault("paid_at", timezone.now())
+        period_id = request.GET.get("billing_period", "")
+        # URL parameters are untrusted; only prefill an accessible, existing period.
+        initial.pop("billing_period", None)
+        period_admin = self.admin_site._registry.get(BillingPeriod)
+        if (period_admin and period_id.isascii() and period_id.isdecimal()
+                and len(period_id) <= 18):
+            period = period_admin.get_queryset(request).filter(pk=int(period_id)).first()
+            if period and period_admin.has_view_or_change_permission(request, period):
+                initial["billing_period"] = period.pk
+                if period.outstanding > 0:
+                    initial.setdefault("amount", period.outstanding)
         return initial
 
     def save_model(self, request, obj, form, change):

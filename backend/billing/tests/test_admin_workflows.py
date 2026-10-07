@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.test import TestCase
+from django.contrib.auth.models import Permission
 from django.urls import reverse
 from django.utils import timezone
 
@@ -118,3 +119,67 @@ class BillingAdminTests(TestCase):
             response = self.client.get(reverse("admin:" + name))
             self.assertEqual(response.status_code, 302)
             self.assertIn("/login/", response.url)
+
+    def test_register_payment_link_opens_prefilled_remaining_amount_without_writing(self):
+        self.pay(self.period, "30.25")
+        response = self.client.get(reverse("admin:billing_billingperiod_change", args=[self.period.pk]))
+        self.assertContains(response, "Зарегистрировать платёж")
+        response = self.client.get(response.context["register_payment_url"])
+        self.assertEqual(response.status_code, 200)
+        initial = response.context["adminform"].form.initial
+        self.assertEqual(initial["billing_period"], self.period.pk)
+        self.assertEqual(initial["amount"], Decimal("69.75"))
+        self.assertEqual(Payment.objects.count(), 1)
+
+    def test_prefill_refreshes_balance_on_each_open(self):
+        url = reverse("admin:billing_payment_add")
+        first = self.client.get(url, {"billing_period": self.period.pk})
+        self.assertEqual(first.context["adminform"].form.initial["amount"], Decimal("100"))
+        self.pay(self.period, "80")
+        second = self.client.get(url, {"billing_period": self.period.pk})
+        self.assertEqual(second.context["adminform"].form.initial["amount"], Decimal("20"))
+
+    def test_paid_and_overpaid_periods_do_not_prefill_zero_or_negative_payment(self):
+        self.pay(self.period, "100")
+        for extra in [None, "10"]:
+            if extra:
+                self.pay(self.period, extra)
+            response = self.client.get(reverse("admin:billing_payment_add"), {"billing_period": self.period.pk})
+            initial = response.context["adminform"].form.initial
+            self.assertEqual(initial["billing_period"], self.period.pk)
+            self.assertNotIn("amount", initial)
+
+    def test_invalid_period_parameters_do_not_crash_or_prefill(self):
+        for value in ["invalid", "-1", "999999999999999999999999", "999999", "１２"]:
+            response = self.client.get(reverse("admin:billing_payment_add"), {"billing_period": value})
+            self.assertEqual(response.status_code, 200)
+            initial = response.context["adminform"].form.initial
+            self.assertNotIn("billing_period", initial)
+            self.assertNotIn("amount", initial)
+
+    def test_partial_payment_can_replace_suggested_amount(self):
+        response = self.client.post(reverse("admin:billing_payment_add") + f"?billing_period={self.period.pk}",
+                                    self.payment_data(amount="12.50"))
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(Payment.objects.get().amount, Decimal("12.50"))
+
+    def test_view_only_staff_does_not_get_registration_link(self):
+        self.other.is_staff = True
+        self.other.save()
+        self.other.user_permissions.add(Permission.objects.get(content_type__app_label="billing", codename="view_billingperiod"))
+        self.client.force_login(self.other)
+        response = self.client.get(reverse("admin:billing_billingperiod_change", args=[self.period.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Зарегистрировать платёж")
+        self.assertEqual(self.client.get(reverse("admin:billing_payment_add")).status_code, 403)
+
+    def test_add_payment_permission_alone_does_not_prefill_period_balance(self):
+        self.other.is_staff = True
+        self.other.save()
+        self.other.user_permissions.add(Permission.objects.get(content_type__app_label="billing", codename="add_payment"))
+        self.client.force_login(self.other)
+        response = self.client.get(reverse("admin:billing_payment_add"), {"billing_period": self.period.pk})
+        self.assertEqual(response.status_code, 200)
+        initial = response.context["adminform"].form.initial
+        self.assertNotIn("amount", initial)
+        self.assertNotIn("billing_period", initial)

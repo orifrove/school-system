@@ -33,6 +33,23 @@ def _text(value, limit=60):
     return escape(str(value)[:limit])
 
 
+def _money(value):
+    return f"{value:,.2f}".replace(",", " ")
+
+
+def _period_text(period):
+    enrollment = period.enrollment
+    subject = enrollment.group.subject if enrollment.group_id else enrollment.subject
+    status = "Оплачено" if period.outstanding == 0 else "Частично оплачено" if period.paid else "Не оплачено"
+    text = (f"{period.period_start:%d.%m.%Y} — {period.period_end:%d.%m.%Y}\n"
+            f"{_text(subject.name)} · {status}\n"
+            f"Начислено: {_money(period.amount_due)}\n"
+            f"Внесено: {_money(period.paid)} · Остаток: {_money(period.outstanding)}\n")
+    if period.credit:
+        text += f"Переплата: {_money(period.credit)}\n"
+    return text
+
+
 def _navigation(rows, prefix, page, more):
     buttons = []
     if page:
@@ -65,8 +82,40 @@ def render_parent_screen(user_id, data):
             [_button("⭐ Оценки", f"pg:grades:{student_id}:0")],
             [_button("📋 Посещаемость", f"pg:attendance:{student_id}:0")],
             [_button("📅 Ближайшие занятия", f"pg:upcoming:{student_id}:0")],
+            [_button("💳 Оплаты", f"pg:billing:{student_id}:0")],
             [_button("Все дети", "pg:children:0")],
         ]
+    elif action == "billing" and len(parts) == 4:
+        student_id, page = _number(parts[2]), _number(parts[3], zero=True)
+        child, periods, more, totals = services.child_billing(user_id, student_id, page)
+        text = (f"<b>{_text(child.full_name)} · Оплаты</b>\n"
+                f"За все периоды:\nНачислено: {_money(totals['due'])}\n"
+                f"Внесено: {_money(totals['paid'])}\n"
+                f"Осталось оплатить: <b>{_money(totals['outstanding'])}</b>\n")
+        if totals['credit']:
+            text += f"Переплата: {_money(totals['credit'])} (по отдельным периодам)\n"
+        if not periods:
+            text += "\nНачислений на этой странице нет."
+        for index, period in enumerate(periods, 1):
+            text += f"\n<b>{index}.</b> {_period_text(period)}"
+            rows.append([_button(f"{index}. История платежей", f"pg:payments:{student_id}:{period.pk}:0")])
+        _navigation(rows, f"pg:billing:{student_id}", page, more)
+        rows.append([_button("Обновить", data)])
+        rows.append([_button("К ребёнку", f"pg:child:{student_id}")])
+    elif action == "payments" and len(parts) == 5:
+        student_id, period_id = _number(parts[2]), _number(parts[3])
+        page = _number(parts[4], zero=True)
+        child, period, payments, more = services.child_payments(user_id, student_id, period_id, page)
+        text = f"<b>{_text(child.full_name)} · История платежей</b>\n{_period_text(period)}\nВремя Ташкента\n"
+        if not payments:
+            text += "\nПлатежей на этой странице нет."
+        for payment in payments:
+            date = timezone.localtime(payment.paid_at).strftime("%d.%m.%Y %H:%M")
+            text += f"\n{date} · <b>{_money(payment.amount)}</b>\n"
+        _navigation(rows, f"pg:payments:{student_id}:{period_id}", page, more)
+        rows.append([_button("Обновить", data)])
+        rows.append([_button("Все начисления", f"pg:billing:{student_id}:0")])
+        rows.append([_button("К ребёнку", f"pg:child:{student_id}")])
     elif action in ("grades", "attendance", "upcoming") and len(parts) == 4:
         student_id, page = _number(parts[2]), _number(parts[3], zero=True)
         operation = {"grades": services.child_grades, "attendance": services.child_attendance,

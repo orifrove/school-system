@@ -152,5 +152,9 @@ python manage.py test --noinput
 python manage.py makemigrations --check --dry-run
 ```
 
+В родительском меню доступен раздел «💳 Оплаты»: `/children` → ребёнок →
+«Оплаты» → «История платежей». Правила расчёта и проверки доступа описаны
+в [PARENT_BILLING.md](PARENT_BILLING.md).
+
 Тесты используют отдельную тестовую PostgreSQL-базу. Bot-тесты не отправляют
 сообщений в Telegram. Живую проверку после перезапуска проводят отдельно.

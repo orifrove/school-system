@@ -6,6 +6,7 @@
 """
 
 from dataclasses import dataclass
+from math import ceil, isfinite
 
 from django.db import transaction
 from django.utils import timezone
@@ -13,6 +14,15 @@ from django.utils import timezone
 from notifications.models import Notification
 
 MAX_ATTEMPTS = 3
+
+
+def retry_delay(item, now=None):
+    """Seconds remaining on a valid saved Telegram retry deadline."""
+    payload = item.payload if isinstance(item.payload, dict) else {}
+    deadline = payload.get("_delivery_not_before", 0)
+    if type(deadline) not in (int, float) or not isfinite(deadline):
+        return 0
+    return max(0, ceil(deadline - (now or timezone.now()).timestamp()))
 
 
 @dataclass(frozen=True)
@@ -51,9 +61,9 @@ def dispatch_batch(sender, prepare, *, limit=50, recipient_id=None):
                 report["skipped"] += 1
                 continue
             payload = item.payload if isinstance(item.payload, dict) else {}
-            wait_until = payload.get("_delivery_not_before", 0)
-            if isinstance(wait_until, (int, float)) and wait_until > timezone.now().timestamp():
-                report["retry_after"] = int(wait_until - timezone.now().timestamp()) + 1
+            delay = retry_delay(item)
+            if delay:
+                report["retry_after"] = delay
                 break
             try:
                 prepared = prepare(item)

@@ -7,7 +7,7 @@ from django.db import close_old_connections, connections
 from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
-from notifications.dispatcher import DeliveryRejected, PreparedMessage, RetryLater, dispatch_batch
+from notifications.dispatcher import DeliveryRejected, PreparedMessage, RetryLater, dispatch_batch, retry_delay
 from notifications.models import Notification
 from notifications.services import notify
 from users.models import User
@@ -31,6 +31,17 @@ class DispatcherTests(TestCase):
         self.assertIsNotNone(self.item.sent_at)
         dispatch_batch(sender, prepare)
         sender.assert_called_once_with(PreparedMessage(123, "Test"))
+
+    def test_retry_delay_uses_same_deadline_and_handles_invalid_payloads(self):
+        now = timezone.now()
+        for payload in [None, [], {"_delivery_not_before": "tomorrow"}, {"_delivery_not_before": True},
+                        {"_delivery_not_before": float("inf")}, {"_delivery_not_before": float("nan")}]:
+            self.item.payload = payload
+            self.assertEqual(retry_delay(self.item, now), 0)
+        self.item.payload = {"_delivery_not_before": now.timestamp() + 0.5}
+        self.assertEqual(retry_delay(self.item, now), 1)
+        self.item.payload = {"_delivery_not_before": now.timestamp()}
+        self.assertEqual(retry_delay(self.item, now), 0)
 
     def test_notify_is_idempotent_and_does_not_reset_sent_event(self):
         dispatch_batch(Mock(), prepare)

@@ -156,5 +156,10 @@ python manage.py makemigrations --check --dry-run
 «Оплаты» → «История платежей». Правила расчёта и проверки доступа описаны
 в [PARENT_BILLING.md](PARENT_BILLING.md).
 
+Из корня проекта Windows-команды можно запускать через `manage.ps1`, например
+`.\manage.ps1 run_bot` или `.\manage.ps1 dispatch_notifications --summary-only`.
+Скрипт выбирает Python из `backend\venv` и рабочую папку `backend`.
+Подробности — [README](../README.md).
+
 Тесты используют отдельную тестовую PostgreSQL-базу. Bot-тесты не отправляют
 сообщений в Telegram. Живую проверку после перезапуска проводят отдельно.

@@ -34,6 +34,7 @@ class Command(BaseCommand):
         mode.add_argument("--summary-only", action="store_true", help="Show queue counts without message text or delivery.")
         parser.add_argument("--limit", type=int, default=50)
         parser.add_argument("--recipient-id", type=int)
+        parser.add_argument("--notification-id", type=int, help="Restrict preview/delivery to one outbox record.")
 
     def handle(self, *args, **options):
         limit = options["limit"]
@@ -41,13 +42,16 @@ class Command(BaseCommand):
             raise CommandError("--limit must be between 1 and 100.")
         if options["recipient_id"] is not None and options["recipient_id"] <= 0:
             raise CommandError("--recipient-id must be positive.")
+        if options["notification_id"] is not None and options["notification_id"] <= 0:
+            raise CommandError("--notification-id must be positive.")
         if options["send"] and options["summary_only"]:
             raise CommandError("--send and --summary-only cannot be combined.")
         if options["send"]:
             if not BOT_TOKEN:
                 raise CommandError("TELEGRAM_BOT_TOKEN is not configured.")
+            selection = {"notification_id": options["notification_id"]} if options["notification_id"] is not None else {}
             report = dispatch_batch(telegram_sender, prepare_parent_notification,
-                                    limit=limit, recipient_id=options["recipient_id"])
+                                    limit=limit, recipient_id=options["recipient_id"], **selection)
             self.stdout.write(str(report))
             if report["retry_after"]:
                 self.stdout.write(f"Rate limited. Wait at least {report['retry_after']} seconds before retrying.")
@@ -56,6 +60,8 @@ class Command(BaseCommand):
         queue = Notification.objects.filter(channel="telegram")
         if options["recipient_id"] is not None:
             queue = queue.filter(recipient_id=options["recipient_id"])
+        if options["notification_id"] is not None:
+            queue = queue.filter(pk=options["notification_id"])
         counts = queue.aggregate(
             total=Count("pk"),
             pending=Count("pk", filter=Q(status="pending", retry_count__lt=MAX_ATTEMPTS)),
@@ -69,7 +75,7 @@ class Command(BaseCommand):
             return
         count = 0
         batch_paused = False
-        for item in candidates(options["recipient_id"])[:limit]:
+        for item in candidates(options["recipient_id"], options["notification_id"])[:limit]:
             count += 1
             if batch_paused:
                 self.stdout.write(f"#{item.pk} BLOCKED: earlier item pauses this batch.")

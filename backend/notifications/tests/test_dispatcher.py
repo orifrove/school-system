@@ -32,6 +32,17 @@ class DispatcherTests(TestCase):
         dispatch_batch(sender, prepare)
         sender.assert_called_once_with(PreparedMessage(123, "Test"))
 
+    def test_exact_notification_selection_leaves_other_records_untouched(self):
+        second = notify(self.user, "test", "event:2", {})
+        sender = Mock()
+        report = dispatch_batch(sender, prepare, notification_id=second.pk, recipient_id=self.user.pk)
+        self.assertEqual(report["sent"], 1)
+        sender.assert_called_once()
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.status, "pending")
+        self.assertEqual(dispatch_batch(sender, prepare, notification_id=second.pk)["sent"], 0)
+        self.assertEqual(dispatch_batch(sender, prepare, notification_id=self.item.pk, recipient_id=self.user.pk + 999)["sent"], 0)
+
     def test_retry_delay_uses_same_deadline_and_handles_invalid_payloads(self):
         now = timezone.now()
         for payload in [None, [], {"_delivery_not_before": "tomorrow"}, {"_delivery_not_before": True},

@@ -40,23 +40,25 @@ class RetryLater(Exception):
         self.seconds = max(1, int(seconds))
 
 
-def candidates(recipient_id=None):
+def candidates(recipient_id=None, notification_id=None):
     queryset = Notification.objects.filter(channel="telegram",
         status__in=[Notification.STATUS_PENDING, Notification.STATUS_FAILED], retry_count__lt=MAX_ATTEMPTS)
     if recipient_id is not None:
         queryset = queryset.filter(recipient_id=recipient_id)
+    if notification_id is not None:
+        queryset = queryset.filter(pk=notification_id)
     return queryset.order_by("created_at", "pk")
 
 
-def dispatch_batch(sender, prepare, *, limit=50, recipient_id=None):
+def dispatch_batch(sender, prepare, *, limit=50, recipient_id=None, notification_id=None):
     if not 1 <= limit <= 100:
         raise ValueError("Batch limit must be between 1 and 100.")
     report = {"sent": 0, "failed": 0, "skipped": 0, "retry_after": 0}
-    ids = list(candidates(recipient_id).values_list("pk", flat=True)[:limit])
-    for notification_id in ids:
+    ids = list(candidates(recipient_id, notification_id).values_list("pk", flat=True)[:limit])
+    for item_id in ids:
         # Keep this transaction short: the transport must have a bounded timeout.
         with transaction.atomic():
-            item = candidates(recipient_id).select_for_update(skip_locked=True).filter(pk=notification_id).first()
+            item = candidates(recipient_id).select_for_update(skip_locked=True).filter(pk=item_id).first()
             if item is None:
                 report["skipped"] += 1
                 continue

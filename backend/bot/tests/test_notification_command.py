@@ -32,6 +32,21 @@ class NotificationCommandTests(TestCase):
             with self.assertRaises(CommandError):
                 call_command("dispatch_notifications", send=True)
 
+    def test_exact_notification_is_forwarded_to_dispatcher(self):
+        with patch.object(command, "BOT_TOKEN", "fake"), patch.object(command, "dispatch_batch", return_value={"retry_after": 0}) as dispatch:
+            call_command("dispatch_notifications", send=True, notification_id=self.item.pk, stdout=StringIO())
+        self.assertEqual(dispatch.call_args.kwargs["notification_id"], self.item.pk)
+
+    def test_notification_filter_applies_to_preview_and_summary(self):
+        Notification.objects.create(recipient=self.item.recipient, event_type="test", event_key="another")
+        output = StringIO()
+        with patch.object(command, "prepare_parent_notification", return_value=PreparedMessage(123, "Preview")) as prepare:
+            call_command("dispatch_notifications", notification_id=self.item.pk, stdout=output)
+        self.assertEqual(prepare.call_count, 1)
+        self.assertIn("total=1", output.getvalue())
+        with self.assertRaises(CommandError):
+            call_command("dispatch_notifications", notification_id=0, stdout=StringIO())
+
     def test_explicit_send_uses_dispatcher(self):
         with patch.object(command, "BOT_TOKEN", "fake"), \
              patch.object(command, "dispatch_batch", return_value={"retry_after": 0}) as dispatch:

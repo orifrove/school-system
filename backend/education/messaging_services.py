@@ -90,7 +90,9 @@ def _teacher_questions(teacher_id):
         parent__is_active=True, parent__user_roles__role__code=Role.PARENT).filter(Exists(teaching), Exists(links))
 
 
-def questions(user_id, role, student_id=0, page=0):
+def questions(user_id, role, student_id=0, page=0, status="all"):
+    if status not in ("all", "open", "answered"):
+        raise ValidationError("Некорректный фильтр вопросов.")
     if role == "p":
         child_profile(user_id, student_id)
         query = Question.objects.filter(parent_id=user_id, student_id=student_id)
@@ -98,9 +100,11 @@ def questions(user_id, role, student_id=0, page=0):
         query = _teacher_questions(user_id)
     else:
         raise PermissionDenied("Недостаточно прав.")
-    return _page(query.select_related("student", "teacher", "parent").annotate(
+    query = query.select_related("student", "teacher", "parent").annotate(
         has_answer=Exists(Answer.objects.filter(question_id=OuterRef("pk"))))
-        .order_by("has_answer", "-created_at", "-pk"), page)
+    if status != "all":
+        query = query.filter(has_answer=(status == "answered"))
+    return _page(query.order_by("has_answer", "-created_at", "-pk"), page)
 
 
 def question_detail(user_id, role, question_id):

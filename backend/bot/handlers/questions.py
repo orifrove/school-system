@@ -43,17 +43,29 @@ def render(user_id, data):
                 "Введите вопрос (до 500 символов). Отправленный текст будет сохранён для преподавателя.\nОтмена: /cancel.")
         context = {"student_id": student_id, "teacher_id": teacher_id, "version": version}
         rows.append([_button("Отмена", f"qm:list:p:{student_id}:0")])
-    elif action == "list" and len(parts) == 5:
-        role, student_id, page = parts[2], _number(parts[3], zero=True), _number(parts[4], zero=True)
-        records, more = services.questions(user_id, role, student_id, page)
+    elif (action == "list" and len(parts) == 5) or (action == "filter" and len(parts) == 6):
+        role, student_id = parts[2], _number(parts[3], zero=True)
+        status = parts[4] if action == "filter" else "all"
+        page = _number(parts[5] if action == "filter" else parts[4], zero=True)
+        records, more = services.questions(user_id, role, student_id, page, status=status)
         text = "<b>Вопросы родителей</b>" if role == "t" else "<b>Мои вопросы</b>"
-        text += "\nСначала вопросы без ответа."
+        labels = {"open": "Без ответа", "answered": "С ответом", "all": "Все"}
+        text += f"\nФильтр: {labels[status]}. Страница {page + 1}."
+        if status == "all":
+            text += "\nСначала вопросы без ответа."
+        rows.append([_button(("• " if key == status else "") + label,
+            f"qm:filter:{role}:{student_id}:{key}:0") for key, label in labels.items()])
         if not records:
             text += "\nНа этой странице вопросов нет."
         for record in records:
             label = "✅" if record.has_answer else "⏳"
+            when = timezone.localtime(record.created_at).strftime("%d.%m %H:%M")
+            person = record.student.full_name if role == "t" else record.teacher.full_name
+            preview = " ".join(record.text.split())
+            snippet = _text(preview, 60) + ("…" if len(preview) > 60 else "")
+            text += f"\n\n{label} <b>#{record.pk}</b> · {when} (Ташкент)\n{_text(person, 30)}\n{snippet}"
             rows.append([_button(f"{label} #{record.pk} · {record.student.full_name[:35]}", f"qm:view:{role}:{record.pk}")])
-        _navigation(rows, f"qm:list:{role}:{student_id}", page, more)
+        _navigation(rows, f"qm:filter:{role}:{student_id}:{status}", page, more)
         rows.append([_button("Обновить", data)])
         if role == "p":
             rows.append([_button("Задать вопрос", f"qm:teachers:{student_id}:0")])

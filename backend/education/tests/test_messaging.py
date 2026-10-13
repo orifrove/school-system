@@ -162,6 +162,55 @@ class MessagingTests(MessagingFixture, TestCase):
             with self.assertRaises((ValueError, PermissionDenied)):
                 async_to_sync(render)(self.parent.pk, data)
 
+    def test_filters_use_actual_answer_not_stale_flag(self):
+        pending = self.ask("Pending")
+        answered = self.ask("Answered")
+        services.answer_question(self.teacher.pk, answered.pk, "Reply")
+        Question.objects.filter(pk=pending.pk).update(answered=True)
+        Question.objects.filter(pk=answered.pk).update(answered=False)
+        for actor, role, student in [(self.parent.pk, "p", self.child.pk), (self.teacher.pk, "t", 0)]:
+            self.assertEqual([q.pk for q in services.questions(actor, role, student, status="open")[0]], [pending.pk])
+            self.assertEqual([q.pk for q in services.questions(actor, role, student, status="answered")[0]], [answered.pk])
+
+    def test_filtered_pagination_and_refresh_keep_selected_filter(self):
+        for i in range(6):
+            self.ask(f"Open {i}")
+        completed = self.ask("Completed")
+        services.answer_question(self.teacher.pk, completed.pk, "Done")
+        data = f"qm:filter:p:{self.child.pk}:open:0"
+        text, keyboard, _ = async_to_sync(render)(self.parent.pk, data)
+        callbacks = [b.callback_data for row in keyboard.inline_keyboard for b in row]
+        self.assertIn(data, callbacks)
+        next_page = f"qm:filter:p:{self.child.pk}:open:1"
+        self.assertIn(next_page, callbacks)
+        second, _, _ = async_to_sync(render)(self.parent.pk, next_page)
+        self.assertIn("Open 0", second)
+        self.assertNotIn("Completed", text + second)
+
+    def test_filter_does_not_bypass_authorization(self):
+        question = self.ask()
+        for status in ["all", "open", "answered"]:
+            self.assertEqual(services.questions(self.other.pk, "t", status=status)[0], [])
+            with self.assertRaises(PermissionDenied):
+                services.questions(self.other.pk, "p", self.child.pk, status=status)
+        self.link.delete()
+        self.assertEqual(services.questions(self.teacher.pk, "t", status="open")[0], [])
+
+    def test_invalid_filter_rejected(self):
+        with self.assertRaises(ValidationError):
+            services.questions(self.teacher.pk, "t", status="invalid")
+        with self.assertRaises(ValidationError):
+            async_to_sync(render)(self.teacher.pk, "qm:filter:t:0:invalid:0")
+
+    def test_list_previews_escape_and_bound_long_text(self):
+        self.teacher.full_name = '"' * 255
+        self.teacher.save()
+        for _ in range(5):
+            self.ask('"' * 500)
+        text, _, _ = async_to_sync(render)(self.parent.pk, f"qm:list:p:{self.child.pk}:0")
+        self.assertIn("&quot;", text)
+        self.assertLess(len(text), 4096)
+
     def test_long_admin_record_can_be_read_in_full_across_pages(self):
         question = self.ask()
         question.text = "A" * 500 + "END OF QUESTION"

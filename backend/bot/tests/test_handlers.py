@@ -153,4 +153,30 @@ class HandlerTests(SimpleTestCase):
             await context.set_state(questions.QuestionInput.answer)
             await dispatcher.feed_update(bot, update("private", "/cancel", 8))
             self.assertIsNone(await context.get_state())
+            await context.set_state(questions.QuestionInput.question)
+            with patch.object(common, "help_text", new=AsyncMock(return_value="Help")) as help_text:
+                await dispatcher.feed_update(bot, update("private", "/help", 9))
+                help_text.assert_awaited_once_with(1)
+                self.assertIsNone(await context.get_state())
+            await context.set_state(questions.QuestionInput.answer)
+            with patch.object(questions.services, "answer_question") as answer:
+                await dispatcher.feed_update(bot, update("private", "/typo", 10))
+                answer.assert_not_called()
+                self.assertEqual(await context.get_state(), questions.QuestionInput.answer.state)
         await bot.session.close()
+
+    async def test_help_button_clears_input_and_acknowledges_callback(self):
+        state = SimpleNamespace(clear=AsyncMock())
+        query = SimpleNamespace(answer=AsyncMock(), message=None)
+        with patch.object(common, "help_text", new=AsyncMock(return_value="Help")) as render:
+            await common.help_callback(query, SimpleNamespace(pk=1), state)
+        render.assert_awaited_once_with(1)
+        query.answer.assert_awaited_once()
+        state.clear.assert_awaited_once()
+
+    async def test_unprompted_text_guides_authenticated_user_without_invite_activation(self):
+        message = SimpleNamespace(text="hello", answer=AsyncMock())
+        with patch.object(common, "_activate_invite_code", new=AsyncMock()) as activate:
+            await common.try_use_invite_code(message, SimpleNamespace(pk=1))
+        activate.assert_not_awaited()
+        self.assertIn("/menu", message.answer.call_args.args[0])

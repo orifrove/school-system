@@ -14,4 +14,6 @@ def main_menu(user_id):
         rows.append([InlineKeyboardButton(text="💬 Вопросы родителей", callback_data="qm:list:t:0:0")])
     if Role.PARENT in roles:
         rows.append([InlineKeyboardButton(text="👨‍👩‍👧 Мои дети", callback_data="pg:children:0")])
+    if rows:
+        rows.append([InlineKeyboardButton(text="❓ Помощь", callback_data="help:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None

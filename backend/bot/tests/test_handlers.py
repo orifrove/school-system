@@ -7,7 +7,7 @@ from aiogram.types import Chat, Message, Update, User as TelegramUser
 from django.test import SimpleTestCase
 from django.core.exceptions import PermissionDenied, ValidationError
 
-from bot.handlers import common, parent, teacher
+from bot.handlers import common, parent, teacher, questions
 from bot.middlewares.auth import AuthMiddleware
 
 
@@ -110,6 +110,7 @@ class HandlerTests(SimpleTestCase):
         dispatcher = Dispatcher()
         dispatcher.message.filter(F.chat.type == "private")
         dispatcher.message.middleware(AuthMiddleware())
+        dispatcher.include_router(questions.router)
         dispatcher.include_router(parent.router)
         dispatcher.include_router(teacher.router)
         dispatcher.include_router(common.router)
@@ -136,4 +137,20 @@ class HandlerTests(SimpleTestCase):
             send.assert_not_awaited()
             await dispatcher.feed_update(bot, update("private", "/schedule", 5))
             render.assert_awaited_with(1, "tg:agenda:today:0")
+            context = dispatcher.fsm.get_context(bot=bot, chat_id=123, user_id=123)
+            await context.set_state(questions.QuestionInput.question)
+            await context.set_data(dict(student_id=2, teacher_id=3, version=0))
+            with patch.object(questions.services, "ask_question", return_value=SimpleNamespace(pk=10)) as ask:
+                await dispatcher.feed_update(bot, update("private", "Question text", 6))
+                ask.assert_called_once_with(1, 2, 3, "Question text", 0)
+                self.assertIsNone(await context.get_state())
+            await context.set_state(questions.QuestionInput.answer)
+            await context.set_data(dict(question_id=10))
+            with patch.object(questions.services, "answer_question") as answer:
+                await dispatcher.feed_update(bot, update("private", "/children", 7))
+                answer.assert_not_called()
+                self.assertIsNone(await context.get_state())
+            await context.set_state(questions.QuestionInput.answer)
+            await dispatcher.feed_update(bot, update("private", "/cancel", 8))
+            self.assertIsNone(await context.get_state())
         await bot.session.close()

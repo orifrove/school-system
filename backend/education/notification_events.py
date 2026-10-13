@@ -1,6 +1,7 @@
 """Academic event creation and delivery-time checks for the generic outbox."""
 
 from django.utils import timezone
+from django.core.exceptions import PermissionDenied
 
 from education.models import Attendance, Grade, Student
 from notifications.dispatcher import DeliveryRejected, PreparedMessage
@@ -35,6 +36,26 @@ def prepare_parent_notification(notification):
     payload = notification.payload
     if not isinstance(payload, dict) or type(payload.get("student_id")) is not int:
         raise DeliveryRejected("invalid_payload")
+    if notification.event_type in ("question_asked", "question_answered"):
+        from education.messaging_services import question_detail
+        if type(payload.get("question_id")) is not int:
+            raise DeliveryRejected("invalid_payload")
+        role = "t" if notification.event_type == "question_asked" else "p"
+        try:
+            question, answer = question_detail(notification.recipient_id, role, payload["question_id"])
+        except PermissionDenied:
+            raise DeliveryRejected("recipient_access_revoked") from None
+        if question.student_id != payload["student_id"]:
+            raise DeliveryRejected("invalid_payload")
+        if role == "p" and answer is None:
+            raise DeliveryRejected("record_unavailable")
+        recipient = User.objects.get(pk=notification.recipient_id)
+        if recipient.telegram_id is None:
+            raise DeliveryRejected("recipient_access_revoked")
+        title = "Новый вопрос родителя" if role == "t" else "Преподаватель ответил на вопрос"
+        route = "/questions" if role == "t" else "/children → ребёнок → Вопросы преподавателю"
+        return PreparedMessage(recipient.telegram_id,
+            f"{title} #{question.pk}\n{question.student.full_name}\nОткрыть: {route}")
     student = Student.objects.filter(pk=payload["student_id"], is_active=True).first()
     if student is None:
         raise DeliveryRejected("student_unavailable")

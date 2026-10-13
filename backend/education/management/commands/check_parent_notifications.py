@@ -44,7 +44,7 @@ class Command(BaseCommand):
         latest = grades.order_by("-created_at", "-pk").first()
         self.stdout.write(f"Grades: {grades.count()}; latest created (UTC): {latest.created_at.isoformat() if latest else 'none'}")
         count = Notification.objects.filter(channel="telegram", payload__student_id=student.pk,
-            event_type__in=["grade_added", "attendance_changed"]).count()
+            event_type__in=["grade_added", "attendance_changed", "question_asked", "question_answered"]).count()
         self.stdout.write(f"Academic notification records for this student (all statuses): {count}.")
         if eligible:
             self.stdout.write("Setup ready for NEW events. Record a new grade through the teacher bot, then preview the queue.")

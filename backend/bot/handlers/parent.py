@@ -83,6 +83,7 @@ def render_parent_screen(user_id, data):
             [_button("📋 Посещаемость", f"pg:attendance:{student_id}:0")],
             [_button("📅 Ближайшие занятия", f"pg:upcoming:{student_id}:0")],
             [_button("💳 Оплаты", f"pg:billing:{student_id}:0")],
+            [_button("💬 Вопросы преподавателю", f"qm:list:p:{student_id}:0")],
             [_button("Все дети", "pg:children:0")],
         ]
     elif action == "billing" and len(parts) == 4:

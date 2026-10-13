@@ -3,7 +3,7 @@ from io import StringIO
 
 from django.core.exceptions import ValidationError
 from django.core.management import call_command, CommandError
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
 from education.lesson_generation import generate_lessons
@@ -103,3 +103,101 @@ class LessonGenerationTests(TestCase):
         self.schedule.is_active = False
         self.schedule.save()
         self.assertEqual(generate_lessons(self.day, 14, apply=True)["created"], 0)
+
+    def extra_schedule(self, *, other_teacher=False, room="A", start=time(18, 30), end=time(19, 30)):
+        group = self.group
+        if other_teacher:
+            teacher = User.objects.create_user(full_name="Other teacher")
+            UserRole.objects.create(user=teacher, role=Role.objects.get(code=Role.TEACHER))
+            group = Group.objects.create(name="Other group", subject=self.subject, teacher=teacher)
+        return Schedule.objects.create(group=group, weekday=0, start_time=start,
+            end_time=end, valid_from=self.day, room=room)
+
+    def test_teacher_overlap_in_batch_blocks_every_write(self):
+        self.extra_schedule(room="B")
+        report = generate_lessons(self.day, 1)
+        self.assertEqual((report["would_create"], report["conflicts"]), (2, 1))
+        self.assertIn("teacher overlap", report["conflict_details"][0])
+        with self.assertRaises(ValidationError):
+            generate_lessons(self.day, 1, apply=True)
+        self.assertFalse(Lesson.objects.exists())
+
+    def test_shared_room_with_different_teachers_blocks_apply(self):
+        self.extra_schedule(other_teacher=True)
+        self.assertIn("room overlap", generate_lessons(self.day, 1)["conflict_details"][0])
+        with self.assertRaises(ValidationError):
+            generate_lessons(self.day, 1, apply=True)
+        self.assertFalse(Lesson.objects.exists())
+
+    def test_adjacent_lessons_are_allowed(self):
+        self.extra_schedule(start=time(19), end=time(20))
+        self.assertEqual(generate_lessons(self.day, 1, apply=True)["created"], 2)
+
+    def test_different_resources_can_overlap(self):
+        self.extra_schedule(other_teacher=True, room="B")
+        self.assertEqual(generate_lessons(self.day, 1, apply=True)["created"], 2)
+
+    def test_blank_room_does_not_claim_a_resource(self):
+        self.schedule.room = ""
+        self.schedule.save()
+        self.extra_schedule(other_teacher=True, room="")
+        self.assertEqual(generate_lessons(self.day, 1, apply=True)["created"], 2)
+
+    def test_existing_held_lesson_blocks_selected_schedule_without_changes(self):
+        generate_lessons(self.day, 1, apply=True)
+        Lesson.objects.update(status=Lesson.STATUS_HELD)
+        before = list(Lesson.objects.values())
+        extra = self.extra_schedule(other_teacher=True)
+        report = generate_lessons(self.day, 1, schedule_id=extra.pk)
+        self.assertIn("room overlap with lesson#", report["conflict_details"][0])
+        with self.assertRaises(ValidationError):
+            generate_lessons(self.day, 1, apply=True, schedule_id=extra.pk)
+        self.assertEqual(before, list(Lesson.objects.values()))
+
+    def test_cancelled_lesson_frees_resources(self):
+        generate_lessons(self.day, 1, apply=True)
+        Lesson.objects.update(status=Lesson.STATUS_CANCELLED)
+        extra = self.extra_schedule()
+        self.assertEqual(generate_lessons(self.day, 1, apply=True, schedule_id=extra.pk)["created"], 1)
+        self.assertEqual(Lesson.objects.filter(status=Lesson.STATUS_CANCELLED).count(), 1)
+
+    def test_date_overflow_is_validation_error(self):
+        with self.assertRaises(ValidationError):
+            generate_lessons(date.max, 2)
+
+    def test_command_reports_conflict_and_refuses_apply(self):
+        self.extra_schedule()
+        output = StringIO()
+        call_command("generate_lessons", start=self.day.isoformat(), days=1, stdout=output)
+        self.assertIn("CONFLICT:", output.getvalue())
+        self.assertIn("Apply is blocked", output.getvalue())
+        with self.assertRaises(CommandError):
+            call_command("generate_lessons", start=self.day.isoformat(), days=1, apply=True, stdout=StringIO())
+        self.assertFalse(Lesson.objects.exists())
+
+
+class ConcurrentLessonGenerationTests(TransactionTestCase):
+    def test_parallel_generators_cannot_double_book_room(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        from django.db import connections
+
+        LessonGenerationTests.setUp(self)
+        extra = LessonGenerationTests.extra_schedule(self, other_teacher=True)
+        barrier = Barrier(2)
+
+        def run(schedule_id):
+            try:
+                barrier.wait(timeout=10)
+                try:
+                    generate_lessons(self.day, 1, apply=True, schedule_id=schedule_id)
+                    return "created"
+                except ValidationError:
+                    return "conflict"
+            finally:
+                connections.close_all()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(run, [self.schedule.pk, extra.pk]))
+        self.assertCountEqual(results, ["created", "conflict"])
+        self.assertEqual(Lesson.objects.count(), 1)

@@ -30,5 +30,9 @@ class Command(BaseCommand):
         self.stdout.write(f"Timezone: {settings.TIME_ZONE}; start={start}; days={options['days']}")
         for detail in report.pop("details"):
             self.stdout.write(detail)
+        for conflict in report.pop("conflict_details"):
+            self.stdout.write(f"CONFLICT: {conflict}")
+        if report["conflicts"]:
+            self.stdout.write("Apply is blocked by conflicts. Candidate counts include conflicting slots.")
         self.stdout.write(str(report))
-        self.stdout.write("Details limited to 50 entries. Existing lessons, including cancelled ones, are preserved.")
+        self.stdout.write("Details limited to 50 entries; conflict reasons to 20. Existing lessons, including cancelled ones, are preserved.")

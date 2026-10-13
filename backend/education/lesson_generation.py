@@ -2,7 +2,8 @@
 from datetime import date, datetime, timedelta
 
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import connection, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from education.models import Enrollment, Group, Lesson, Schedule
@@ -15,7 +16,15 @@ def generate_lessons(start, days=14, *, apply=False, schedule_id=None):
         raise ValidationError("Use a start date and a range of 1 to 90 days.")
     if schedule_id is not None and (type(schedule_id) is not int or schedule_id <= 0):
         raise ValidationError("Schedule ID must be positive.")
-    end = start + timedelta(days=days - 1)
+    try:
+        end = start + timedelta(days=days - 1)
+    except OverflowError:
+        raise ValidationError("Date range exceeds the supported calendar.") from None
+    if apply:
+        # Serialize this generator across schedules, including shared rooms.
+        # Direct Admin/ORM lesson writes are outside this command-level lock.
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_xact_lock(%s)", [73191501])
     schedules = Schedule.objects.filter(is_active=True, valid_from__lte=end).order_by("pk")
     if schedule_id is not None:
         if not Schedule.objects.filter(pk=schedule_id).exists():
@@ -23,7 +32,9 @@ def generate_lessons(start, days=14, *, apply=False, schedule_id=None):
         schedules = schedules.filter(pk=schedule_id)
     if apply:
         schedules = schedules.select_for_update()
-    report = {"created": 0, "would_create": 0, "existing": 0, "skipped": 0, "details": []}
+    report = {"created": 0, "would_create": 0, "existing": 0, "skipped": 0,
+              "conflicts": 0, "conflict_details": [], "details": []}
+    planned = []
     zone = timezone.get_default_timezone()
     for schedule in schedules:
         if schedule.valid_until and schedule.valid_until < start:
@@ -62,12 +73,40 @@ def generate_lessons(start, days=14, *, apply=False, schedule_id=None):
             if Lesson.objects.filter(schedule=schedule, starts_at=begins).exists():
                 report["existing"] += 1
                 continue
-            if apply:
-                _, created = Lesson.objects.get_or_create(schedule=schedule, starts_at=begins,
-                    defaults={"ends_at": ends, "teacher": teacher, "subject": subject, "room": schedule.room})
-                report["created" if created else "existing"] += 1
-            else:
-                report["would_create"] += 1
+            planned.append((schedule, teacher, subject, begins, ends))
             if len(report["details"]) < 50:
                 report["details"].append(f"schedule#{schedule.pk} {day} {schedule.start_time} - {schedule.end_time}")
+    for index, (schedule, teacher, subject, begins, ends) in enumerate(planned):
+        room = schedule.room if schedule.room and schedule.room.strip() else None
+        resource = Q(teacher=teacher)
+        if room:
+            resource |= Q(room=room)
+        existing = Lesson.objects.exclude(status=Lesson.STATUS_CANCELLED).filter(
+            resource, starts_at__lt=ends, ends_at__gt=begins).order_by("pk").first()
+        conflict = None
+        if existing:
+            reason = "teacher" if existing.teacher_id == teacher.pk else "room"
+            conflict = f"{reason} overlap with lesson#{existing.pk}"
+        else:
+            for other, other_teacher, _, other_start, other_end in planned[:index]:
+                if other_start < ends and other_end > begins:
+                    if other_teacher.pk == teacher.pk:
+                        conflict = f"teacher overlap with schedule#{other.pk} in this batch"
+                        break
+                    if room and other.room == room:
+                        conflict = f"room overlap with schedule#{other.pk} in this batch"
+                        break
+        if conflict:
+            report["conflicts"] += 1
+            if len(report["conflict_details"]) < 20:
+                report["conflict_details"].append(f"schedule#{schedule.pk} {begins.astimezone(zone).isoformat()}: {conflict}")
+    if apply and report["conflicts"]:
+        raise ValidationError(["Conflicts detected; no lessons saved. Review preview and correct schedules."] + report["conflict_details"])
+    for schedule, teacher, subject, begins, ends in planned:
+        if apply:
+            _, created = Lesson.objects.get_or_create(schedule=schedule, starts_at=begins,
+                defaults={"ends_at": ends, "teacher": teacher, "subject": subject, "room": schedule.room})
+            report["created" if created else "existing"] += 1
+        else:
+            report["would_create"] += 1
     return report

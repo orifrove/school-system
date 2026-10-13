@@ -49,4 +49,5 @@ Django, PostgreSQL и Telegram-бот для преподавателей и р�
 - [Родительские оплаты](docs/PARENT_BILLING.md)
 - [Уведомления и диагностика](docs/NOTIFICATIONS.md)
 - [Вопросы родителей и ответы](docs/QUESTIONS.md)
+- [Создание занятий по расписанию](docs/LESSON_GENERATION.md)
 - [Состояние реализации](docs/SCHEMA_STATUS.md)

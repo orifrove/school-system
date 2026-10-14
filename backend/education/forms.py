@@ -29,6 +29,9 @@ class GroupAdminForm(forms.ModelForm):
         if self.instance._state.adding or "teacher" in self.changed_data:
             if not teacher.is_active or not teacher.user_roles.filter(role__code=Role.TEACHER).exists():
                 raise forms.ValidationError("Назначьте активного пользователя с ролью Teacher.")
+            if self.instance.pk:
+                from education.services import validate_group_teacher_change
+                validate_group_teacher_change(self.instance, teacher)
         return teacher
 
     def clean_subject(self):

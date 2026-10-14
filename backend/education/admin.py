@@ -71,6 +71,12 @@ class SubjectAdmin(admin.ModelAdmin):
 
 @admin.register(Group)
 class GroupAdmin(admin.ModelAdmin):
+    @transaction.atomic
+    def changeform_view(self, request, object_id=None, form_url="", extra_context=None):
+        if request.method == "POST":
+            lock_lesson_planning()
+        return super().changeform_view(request, object_id, form_url, extra_context)
+
     form = GroupAdminForm
     list_display = ("id", "name", "subject", "teacher", "capacity", "is_active")
     list_filter = ("subject", "is_active")
@@ -85,6 +91,7 @@ class GroupAdmin(admin.ModelAdmin):
         if not change:
             super().save_model(request, obj, form, change)
             return
+        lock_lesson_planning()
         original = Group.objects.select_for_update().get(pk=obj.pk)
         update_group(original, name=obj.name, subject=obj.subject,
                      capacity=obj.capacity, is_active=obj.is_active)

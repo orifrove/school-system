@@ -17,6 +17,7 @@ from django.utils import timezone
 
 from education.models import Attendance, Enrollment, Grade, Group, Lesson, Schedule
 from education.notification_events import queue_attendance, queue_grade
+from education.lesson_lock import lock_lesson_planning
 
 
 def update_group(group, **fields):
@@ -40,19 +41,37 @@ def update_group(group, **fields):
     return group
 
 
+def validate_group_teacher_change(group, new_teacher):
+    """Read-only preflight; callers that write must hold the planning lock."""
+    moving = Lesson.objects.filter(schedule__group=group, status=Lesson.STATUS_PLANNED)
+    previous = []
+    for lesson in moving.order_by("starts_at", "pk"):
+        previous = [other for other in previous if other.ends_at > lesson.starts_at]
+        conflict = previous[0] if previous else None
+        if conflict is None:
+            conflict = Lesson.objects.filter(teacher=new_teacher,
+                starts_at__lt=lesson.ends_at, ends_at__gt=lesson.starts_at
+            ).exclude(status=Lesson.STATUS_CANCELLED).exclude(pk__in=moving.values("pk")).order_by("pk").first()
+        if conflict:
+            local = timezone.localtime(lesson.starts_at, timezone.get_default_timezone())
+            raise ValidationError(f"Смена преподавателя создаст пересечение: занятия #{lesson.pk} и #{conflict.pk} "
+                f"({local:%d.%m.%Y %H:%M}). Исправьте расписание перед сменой преподавателя.")
+        previous.append(lesson)
+
+
 def change_group_teacher(group, new_teacher):
-    """
-    database.md, раздел 3.2: held/cancelled Lesson не трогаем (факт
-    прошлого), planned - обновляем на нового учителя атомарно вместе
-    со сменой Group.teacher.
-    """
+    """Transfer planned lessons atomically; retain held/cancelled snapshots."""
     with transaction.atomic():
-        group.teacher = new_teacher
-        group.save(update_fields=["teacher"])
-        Lesson.objects.filter(
-            schedule__group=group,
-            status=Lesson.STATUS_PLANNED,
-        ).update(teacher=new_teacher)
+        lock_lesson_planning()
+        current = Group.objects.select_for_update().get(pk=group.pk)
+        if current.teacher_id == new_teacher.pk:
+            group.teacher = new_teacher
+            return group
+        validate_group_teacher_change(current, new_teacher)
+        current.teacher = new_teacher
+        current.save(update_fields=["teacher"])
+        Lesson.objects.filter(schedule__group=current, status=Lesson.STATUS_PLANNED).update(teacher=new_teacher)
+    group.teacher = new_teacher
     return group
 
 

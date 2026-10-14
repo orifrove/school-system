@@ -2,11 +2,12 @@
 from datetime import date, datetime, timedelta
 
 from django.core.exceptions import ValidationError
-from django.db import connection, transaction
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
 from education.models import Enrollment, Group, Lesson, Schedule
+from education.lesson_lock import lock_lesson_planning
 from users.models import Role
 
 
@@ -22,9 +23,8 @@ def generate_lessons(start, days=14, *, apply=False, schedule_id=None):
         raise ValidationError("Date range exceeds the supported calendar.") from None
     if apply:
         # Serialize this generator across schedules, including shared rooms.
-        # Direct Admin/ORM lesson writes are outside this command-level lock.
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT pg_advisory_xact_lock(%s)", [73191501])
+        # Lesson Admin shares the lock; direct ORM writes remain outside it.
+        lock_lesson_planning()
     schedules = Schedule.objects.filter(is_active=True, valid_from__lte=end).order_by("pk")
     if schedule_id is not None:
         if not Schedule.objects.filter(pk=schedule_id).exists():

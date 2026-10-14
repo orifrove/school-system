@@ -2,8 +2,9 @@ from django.contrib import admin
 from django.db import transaction
 from django.db.models import Count, Q
 
-from .forms import GroupAdminForm, ParentStudentAdminForm, ScheduleAdminForm
+from .forms import GroupAdminForm, LessonAdminForm, ParentStudentAdminForm, ScheduleAdminForm
 from .services import change_group_teacher, update_group
+from .lesson_lock import lock_lesson_planning
 
 from .models import (
     Answer,
@@ -115,6 +116,15 @@ class ScheduleAdmin(admin.ModelAdmin):
 
 @admin.register(Lesson)
 class LessonAdmin(admin.ModelAdmin):
+    form = LessonAdminForm
+
+    @transaction.atomic
+    def changeform_view(self, request, object_id=None, form_url="", extra_context=None):
+        if request.method == "POST":
+            # Lock before form validation and hold until Admin finishes saving.
+            lock_lesson_planning()
+        return super().changeform_view(request, object_id, form_url, extra_context)
+
     list_display = ("id", "subject", "teacher", "starts_at", "status")
     list_filter = ("status", "subject")
     autocomplete_fields = ("schedule", "teacher", "subject")

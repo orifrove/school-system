@@ -5,6 +5,7 @@ from django.db.models import Count, Q
 from .forms import GroupAdminForm, LessonAdminForm, ParentStudentAdminForm, ScheduleAdminForm
 from .services import change_group_teacher, update_group
 from .lesson_lock import lock_lesson_planning
+from .admin_filters import LessonPeriodFilter
 
 from .models import (
     Answer,
@@ -132,13 +133,27 @@ class LessonAdmin(admin.ModelAdmin):
             lock_lesson_planning()
         return super().changeform_view(request, object_id, form_url, extra_context)
 
-    list_display = ("id", "subject", "teacher", "starts_at", "status")
-    list_filter = ("status", "subject")
+    list_display = ("id", "learning_source", "subject", "teacher", "starts_at", "ends_at", "room", "status")
+    list_filter = (LessonPeriodFilter, "status", "subject", ("teacher", admin.RelatedOnlyFieldListFilter))
     autocomplete_fields = ("schedule", "teacher", "subject")
-    search_fields = ("subject__name",)
+    search_fields = ("subject__name", "teacher__full_name", "schedule__group__name",
+                     "schedule__enrollment__student__full_name", "room")
+    search_help_text = "Предмет, преподаватель, группа, индивидуальный ученик или кабинет."
     date_hierarchy = "starts_at"
     ordering = ("-starts_at", "-pk")
-    list_select_related = ("subject", "teacher")
+    list_per_page = 30
+    list_select_related = ("subject", "teacher", "schedule__group", "schedule__enrollment__student")
+
+    def get_ordering(self, request):
+        if request.GET.get("lesson_period") in {"today", "tomorrow", "week"}:
+            return ("starts_at", "pk")
+        return super().get_ordering(request)
+
+    @admin.display(description="Группа / индивидуально")
+    def learning_source(self, obj):
+        if obj.schedule.group_id:
+            return obj.schedule.group.name
+        return f"Индивидуально: {obj.schedule.enrollment.student.full_name}"
 
 
 @admin.register(Attendance)

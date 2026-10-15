@@ -1,6 +1,9 @@
 from django.contrib import admin
 from django.db import transaction
 from django.db.models import Count, Q
+from django.urls import reverse
+from django.utils.html import format_html, format_html_join
+from django.utils import timezone
 
 from .forms import GroupAdminForm, LessonAdminForm, ParentStudentAdminForm, ScheduleAdminForm
 from .services import change_group_teacher, update_group
@@ -133,7 +136,7 @@ class LessonAdmin(admin.ModelAdmin):
             lock_lesson_planning()
         return super().changeform_view(request, object_id, form_url, extra_context)
 
-    list_display = ("id", "learning_source", "subject", "teacher", "starts_at", "ends_at", "room", "status")
+    list_display = ("id", "learning_source", "subject", "teacher", "starts_at", "ends_at", "room", "status", "attendance_count", "grade_count")
     list_filter = (LessonPeriodFilter, "status", "subject", ("teacher", admin.RelatedOnlyFieldListFilter))
     autocomplete_fields = ("schedule", "teacher", "subject")
     search_fields = ("subject__name", "teacher__full_name", "schedule__group__name",
@@ -143,6 +146,67 @@ class LessonAdmin(admin.ModelAdmin):
     ordering = ("-starts_at", "-pk")
     list_per_page = 30
     list_select_related = ("subject", "teacher", "schedule__group", "schedule__enrollment__student")
+
+    @staticmethod
+    def can_view_records(request, model):
+        return request.user.has_perm(f"education.view_{model}") or request.user.has_perm(f"education.change_{model}")
+
+    def get_list_display(self, request):
+        fields = list(super().get_list_display(request))
+        for model, field in (("attendance", "attendance_count"), ("grade", "grade_count")):
+            if not self.can_view_records(request, model):
+                fields.remove(field)
+        return fields
+
+    def get_queryset(self, request):
+        queryset = super().get_queryset(request)
+        annotations = {}
+        if self.can_view_records(request, "attendance"):
+            annotations["attendance_total"] = Count("attendances", distinct=True)
+        if self.can_view_records(request, "grade"):
+            annotations["grade_total"] = Count("grades", distinct=True)
+        return queryset.annotate(**annotations)
+
+    def get_readonly_fields(self, request, obj=None):
+        fields = list(super().get_readonly_fields(request, obj))
+        if obj:
+            if self.can_view_records(request, "attendance"):
+                fields.append("attendance_journal")
+            if self.can_view_records(request, "grade"):
+                fields.append("grade_journal")
+        return fields
+
+    @admin.display(description="Отметок", ordering="attendance_total")
+    def attendance_count(self, obj):
+        return obj.attendance_total
+
+    @admin.display(description="Оценок", ordering="grade_total")
+    def grade_count(self, obj):
+        return obj.grade_total
+
+    @admin.display(description="Посещаемость занятия")
+    def attendance_journal(self, obj):
+        rows = list(obj.attendances.select_related("student", "marked_by").order_by("student__full_name", "pk")[:20])
+        if not rows:
+            return "Отметок пока нет."
+        body = format_html_join("", "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>", (
+            (row.student.full_name, row.get_status_display(), row.comment or "—",
+             row.marked_by.full_name if row.marked_by else "—") for row in rows))
+        return format_html('<p>Первые 20 записей. <a href="{}?lesson__id__exact={}">Все отметки этого занятия</a></p>'
+            '<table><thead><tr><th>Ученик</th><th>Отметка</th><th>Комментарий</th><th>Автор</th></tr></thead><tbody>{}</tbody></table>',
+            reverse("admin:education_attendance_changelist"), obj.pk, body)
+
+    @admin.display(description="Оценки занятия")
+    def grade_journal(self, obj):
+        rows = list(obj.grades.select_related("enrollment__student", "given_by_teacher").order_by("-given_at", "-pk")[:20])
+        if not rows:
+            return "Оценок пока нет."
+        body = format_html_join("", "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>", (
+            (row.enrollment.student.full_name, f"{row.value}/{row.max_value}" if row.max_value else row.value, row.comment or "—", row.given_by_teacher.full_name,
+             timezone.localtime(row.given_at, timezone.get_default_timezone()).strftime("%d.%m.%Y %H:%M")) for row in rows))
+        return format_html('<p>Последние 20 записей. <a href="{}?lesson__id__exact={}">Все оценки этого занятия</a></p>'
+            '<table><thead><tr><th>Ученик</th><th>Оценка</th><th>Комментарий</th><th>Автор</th><th>Дата</th></tr></thead><tbody>{}</tbody></table>',
+            reverse("admin:education_grade_changelist"), obj.pk, body)
 
     def get_ordering(self, request):
         if request.GET.get("lesson_period") in {"today", "tomorrow", "week"}:
